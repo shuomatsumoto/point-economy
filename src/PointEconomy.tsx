@@ -53,15 +53,15 @@ export default function PointEconomy({ economyId }: Props) {
 
   const [me, setMe] = useState<{ id: string; email?: string } | null>(null);
 
-  const [profiles, setProfiles] = useState<Record<string, string>>({}); // user_id -> display_name
+  // profiles: user_id -> display_name
+  const [profiles, setProfiles] = useState<Record<string, string>>({});
+  const [myDisplayName, setMyDisplayName] = useState('');
 
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
+  const [balances, setBalances] = useState<Record<string, number>>({}); // currency_id -> balance
 
-  // 財布（残高）: currency_id -> balance
-  const [balances, setBalances] = useState<Record<string, number>>({});
-
-  // 作成フォーム
+  // Create forms
   const [newCurrency, setNewCurrency] = useState({ name: '', symbol: '', rules: '', color: '#3b82f6' });
   const [newActivity, setNewActivity] = useState({ currencyId: '', description: '', points: '' });
 
@@ -84,24 +84,80 @@ export default function PointEconomy({ economyId }: Props) {
   const [myRate, setMyRate] = useState('');
 
   // ---------------------------
-  // Loaders
+  // Loaders / Ensurers
   // ---------------------------
   async function loadMe() {
     const { data, error } = await supabase.auth.getSession();
-    if (error) {
-      alert(error.message);
-      return;
-    }
+    if (error) return alert(error.message);
     const u = data.session?.user;
     setMe(u ? { id: u.id, email: u.email ?? undefined } : null);
+  }
+
+  async function ensureProfileRow() {
+    // profiles が無ければ作る（RLSで insert_self を許可している前提）
+    const { data: s, error: e0 } = await supabase.auth.getSession();
+    if (e0) return alert(e0.message);
+    const user = s.session?.user;
+    if (!user) return;
+
+    const { data: p, error: e1 } = await supabase
+      .from('profiles')
+      .select('user_id, display_name')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (e1) return alert(e1.message);
+
+    if (!p) {
+      const display = (user.user_metadata?.display_name as string) || user.email?.split('@')[0] || 'user';
+      const { error: e2 } = await supabase.from('profiles').insert({ user_id: user.id, display_name: display });
+      if (e2) return alert(e2.message);
+    }
   }
 
   async function loadProfiles() {
     const { data, error } = await supabase.from('profiles').select('user_id, display_name');
     if (error) return alert(error.message);
+
     const m: Record<string, string> = {};
-    (data ?? []).forEach((p: any) => (m[p.user_id] = p.display_name || p.user_id.slice(0, 6)));
+    (data ?? []).forEach((p: any) => {
+      m[p.user_id] = p.display_name || p.user_id.slice(0, 6);
+    });
     setProfiles(m);
+  }
+
+  async function loadMyProfile() {
+    const { data: s } = await supabase.auth.getSession();
+    const uid = s.session?.user?.id;
+    if (!uid) return;
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('display_name')
+      .eq('user_id', uid)
+      .maybeSingle();
+
+    if (error) return alert(error.message);
+    setMyDisplayName((data?.display_name as string) ?? '');
+  }
+
+  async function saveMyProfile() {
+    const { data: s } = await supabase.auth.getSession();
+    const uid = s.session?.user?.id;
+    if (!uid) return;
+
+    const name = myDisplayName.trim();
+    if (!name) return alert('表示名を入力してください');
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({ display_name: name, updated_at: new Date().toISOString() })
+      .eq('user_id', uid);
+
+    if (error) return alert(error.message);
+
+    await Promise.all([loadProfiles(), loadMyProfile()]);
+    alert('保存しました');
   }
 
   async function loadCurrencies() {
@@ -125,7 +181,6 @@ export default function PointEconomy({ economyId }: Props) {
 
     if (error) return alert(error.message);
 
-    // points が string の環境もあるので Number化
     const rows = (data ?? []).map((a: any) => ({
       ...a,
       points: Number(a.points),
@@ -134,7 +189,7 @@ export default function PointEconomy({ economyId }: Props) {
   }
 
   async function loadBalances() {
-    // ユーザー別財布：view currency_balances_by_user を読む
+    // view currency_balances_by_user（ユーザー別財布）
     const { data: s, error: e0 } = await supabase.auth.getSession();
     if (e0) return alert(e0.message);
     const uid = s.session?.user?.id;
@@ -192,27 +247,6 @@ export default function PointEconomy({ economyId }: Props) {
     setRateSubmissions(rows);
   }
 
-  // 初期ロード
-  useEffect(() => {
-    if (!economyId) return;
-    (async () => {
-      await loadMe();
-      await Promise.all([loadProfiles(), loadCurrencies(), loadActivities(), loadBalances(), loadRequests()]);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [economyId]);
-
-  // request 選択が変わったら rates をロード
-  useEffect(() => {
-    if (!selectedRequestId) {
-      setRateSubmissions([]);
-      setMyRate('');
-      return;
-    }
-    loadRateSubmissions(selectedRequestId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRequestId]);
-
   // ---------------------------
   // Helpers
   // ---------------------------
@@ -231,7 +265,7 @@ export default function PointEconomy({ economyId }: Props) {
   }
 
   const totalValue = useMemo(() => {
-    // 同一単位ではないが、UI上の「総数」指標として財布合計を出す
+    // 通貨が混在するが、指標として財布合計を出す
     return Object.values(balances).reduce((s, v) => s + Number(v), 0);
   }, [balances]);
 
@@ -258,12 +292,9 @@ export default function PointEconomy({ economyId }: Props) {
   async function addActivity() {
     const currencyId = newActivity.currencyId;
     const description = newActivity.description.trim();
-    const pointsStr = newActivity.points;
+    const pts = Number(newActivity.points);
 
-    if (!currencyId || !description || !pointsStr) return;
-
-    const pts = Number(pointsStr);
-    if (!Number.isFinite(pts)) return;
+    if (!currencyId || !description || !Number.isFinite(pts)) return;
 
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
@@ -290,13 +321,11 @@ export default function PointEconomy({ economyId }: Props) {
 
     if (!fromId || !toId || !Number.isFinite(amt) || amt <= 0) return;
     if (fromId === toId) return alert('交換元と交換先は別にしてください');
+    if (myBalance(fromId) < amt) return alert('残高不足です');
 
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
     if (!uid) return alert('not authenticated');
-
-    // 自分財布の残高チェック（view基準）
-    if (myBalance(fromId) < amt) return alert('残高不足です');
 
     const { data, error } = await supabase
       .from('exchange_requests')
@@ -320,7 +349,6 @@ export default function PointEconomy({ economyId }: Props) {
 
   async function submitRate() {
     if (!selectedRequest) return;
-    if (!myRate) return;
 
     const rate = Number(myRate);
     if (!Number.isFinite(rate) || rate <= 0) return alert('rate を正しく入力してください');
@@ -329,7 +357,6 @@ export default function PointEconomy({ economyId }: Props) {
     const uid = s.session?.user?.id;
     if (!uid) return alert('not authenticated');
 
-    // unique(request_id, submitted_by) を前提に upsert
     const { error } = await supabase.from('exchange_rate_submissions').upsert(
       {
         economy_id: selectedRequest.economy_id,
@@ -350,14 +377,42 @@ export default function PointEconomy({ economyId }: Props) {
     if (!selectedRequest) return;
 
     const { data, error } = await supabase.rpc('finalize_exchange_request', { p_request_id: selectedRequest.id });
-
     if (error) return alert(error.message);
 
-    // finalize 成功後に refresh
-    await Promise.all([loadRequests(), loadBalances()]);
-    // data は exchange_id の想定だが表示は任意
     console.log('finalized exchange id:', data);
+    await Promise.all([loadRequests(), loadBalances()]);
   }
+
+  // ---------------------------
+  // Effects
+  // ---------------------------
+  useEffect(() => {
+    if (!economyId) return;
+
+    (async () => {
+      await loadMe();
+      await ensureProfileRow();
+      await Promise.all([
+        loadProfiles(),
+        loadMyProfile(),
+        loadCurrencies(),
+        loadActivities(),
+        loadBalances(),
+        loadRequests(),
+      ]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [economyId]);
+
+  useEffect(() => {
+    if (!selectedRequestId) {
+      setRateSubmissions([]);
+      setMyRate('');
+      return;
+    }
+    loadRateSubmissions(selectedRequestId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRequestId]);
 
   // ---------------------------
   // UI
@@ -418,16 +473,36 @@ export default function PointEconomy({ economyId }: Props) {
               </div>
             </div>
 
+            {/* Profile card */}
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <h2 className="text-xl font-bold mb-3">プロフィール</h2>
+              <div className="text-sm text-slate-300 mb-2">
+                現在の表示名: <span className="font-semibold">{myDisplayName || '(未設定)'}</span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                  placeholder="表示名（例：Shuo）"
+                  value={myDisplayName}
+                  onChange={(e) => setMyDisplayName(e.target.value)}
+                />
+                <button onClick={saveMyProfile} className="px-4 rounded bg-purple-600 hover:bg-purple-700 font-semibold">
+                  保存
+                </button>
+              </div>
+              <div className="text-xs text-slate-400 mt-2">
+                ※表示名は activities / exchange の「by:」表示に反映されます
+              </div>
+            </div>
+
+            {/* Balances */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <h2 className="text-xl font-bold flex items-center gap-2">
                   <TrendingUp size={24} />
                   保有ポイント（自分）
                 </h2>
-                <button
-                  onClick={loadBalances}
-                  className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
-                >
+                <button onClick={loadBalances} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
                   残高再計算
                 </button>
               </div>
@@ -449,6 +524,7 @@ export default function PointEconomy({ economyId }: Props) {
               </div>
             </div>
 
+            {/* Recent activities */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <h2 className="text-xl font-bold mb-4">最近の活動（全体）</h2>
               <div className="space-y-2">
@@ -598,7 +674,7 @@ export default function PointEconomy({ economyId }: Props) {
                 <h2 className="text-xl font-bold">活動履歴（全体）</h2>
                 <button
                   onClick={async () => {
-                    await Promise.all([loadActivities(), loadBalances()]);
+                    await Promise.all([loadActivities(), loadBalances(), loadProfiles()]);
                   }}
                   className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
                 >
@@ -631,7 +707,6 @@ export default function PointEconomy({ economyId }: Props) {
         {/* Exchange */}
         {activeTab === 'exchange' && (
           <div className="space-y-6">
-            {/* Create request */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
                 <ArrowRightLeft size={24} />
@@ -680,13 +755,16 @@ export default function PointEconomy({ economyId }: Props) {
               </div>
             </div>
 
-            {/* Request list + detail */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {/* List */}
               <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-xl font-bold">RequestList</h2>
-                  <button onClick={loadRequests} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+                  <button
+                    onClick={async () => {
+                      await Promise.all([loadRequests(), loadProfiles()]);
+                    }}
+                    className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
+                  >
                     再読み込み
                   </button>
                 </div>
@@ -715,7 +793,6 @@ export default function PointEconomy({ economyId }: Props) {
                 </div>
               </div>
 
-              {/* Detail */}
               <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
                 <h2 className="text-xl font-bold mb-4">RequestDetail</h2>
 
@@ -740,7 +817,6 @@ export default function PointEconomy({ economyId }: Props) {
                       )}
                     </div>
 
-                    {/* SubmitRate */}
                     <div className="p-4 bg-slate-700/30 rounded">
                       <div className="font-semibold mb-2">SubmitRate</div>
 
@@ -768,7 +844,6 @@ export default function PointEconomy({ economyId }: Props) {
                       </button>
                     </div>
 
-                    {/* Rates */}
                     <div className="p-4 bg-slate-700/20 rounded">
                       <div className="font-semibold mb-2">
                         提出済みレート{avgRate != null ? `（平均: ${avgRate.toFixed(6)}）` : ''}
@@ -796,7 +871,7 @@ export default function PointEconomy({ economyId }: Props) {
         )}
 
         <footer className="mt-10 text-center text-xs text-slate-400">
-          profiles が見えない/名前が出ない場合は、profiles テーブル作成と schema cache 更新、activities.created_by の存在を確認してください。
+          profiles が見えない場合：profiles テーブル作成 / RLS / schema cache 更新 / ensureProfileRow の alert を確認。
         </footer>
       </div>
     </div>
