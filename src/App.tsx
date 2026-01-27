@@ -5,6 +5,8 @@ import PointEconomy from './PointEconomy';
 function AuthGate({ children }: { children: React.ReactNode }) {
   const [session, setSession] = React.useState<any>(null);
   const [email, setEmail] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [mode, setMode] = React.useState<'signin' | 'signup'>('signin');
 
   React.useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -12,35 +14,83 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function sendMagicLink() {
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    });
+  async function signIn() {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) alert(error.message);
-    else alert('メールを確認してください（Magic Link）');
+  }
+
+  async function signUp() {
+    // display_name を持たせたい場合（任意）
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { display_name: email.split('@')[0] },
+      },
+    });
+    if (error) return alert(error.message);
+    alert('アカウントを作成しました。メール確認が必要な設定なら、受信メールを確認してください。');
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
   }
 
   if (!session) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white">
-        <div className="w-full max-w-md bg-slate-800 p-6 rounded">
-          <h2 className="text-xl font-bold mb-4">ログイン</h2>
+        <div className="w-full max-w-md bg-slate-800 p-6 rounded space-y-3">
+          <div className="flex gap-2">
+            <button
+              className={`flex-1 p-2 rounded ${mode === 'signin' ? 'bg-purple-600' : 'bg-slate-700'}`}
+              onClick={() => setMode('signin')}
+            >
+              ログイン
+            </button>
+            <button
+              className={`flex-1 p-2 rounded ${mode === 'signup' ? 'bg-blue-600' : 'bg-slate-700'}`}
+              onClick={() => setMode('signup')}
+            >
+              新規作成
+            </button>
+          </div>
+
           <input
-            className="w-full p-3 rounded bg-slate-700 mb-3"
+            className="w-full p-3 rounded bg-slate-700"
             placeholder="you@example.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <button onClick={sendMagicLink} className="w-full bg-purple-600 p-3 rounded font-semibold">
-            Magic Link を送信
-          </button>
+          <input
+            className="w-full p-3 rounded bg-slate-700"
+            placeholder="password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+
+          {mode === 'signin' ? (
+            <button onClick={signIn} className="w-full bg-purple-600 p-3 rounded font-semibold">
+              ログイン
+            </button>
+          ) : (
+            <button onClick={signUp} className="w-full bg-blue-600 p-3 rounded font-semibold">
+              アカウント作成
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
-  return <>{children}</>;
+  return (
+    <div>
+      <div className="p-2 bg-slate-900 text-slate-200 text-sm flex justify-end">
+        <button onClick={signOut} className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600">ログアウト</button>
+      </div>
+      {children}
+    </div>
+  );
 }
 
 function EconomyPicker({ onSelected }: { onSelected: (economyId: string) => void }) {
