@@ -9,10 +9,19 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = React.useState<'signin' | 'signup'>('signin');
 
   React.useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+  supabase.auth.getSession().then(({ data }) => {
+    setSession(data.session);
+    if (data.session) ensureProfile();
+  });
+
+  const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+    setSession(s);
+    if (s) ensureProfile();
+  });
+
+  return () => sub.subscription.unsubscribe();
   }, []);
+
 
   async function signIn() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -83,6 +92,37 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
+　async function ensureProfile() {
+  const { data } = await supabase.auth.getSession();
+  const user = data.session?.user;
+  if (!user) return;
+
+  // 既存確認
+  const { data: p, error: e1 } = await supabase
+    .from('profiles')
+    .select('user_id, display_name')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  // テーブル未反映/キャッシュ等で死んでるならここで気づける
+  if (e1) {
+    console.error(e1);
+    alert(e1.message);
+    return;
+  }
+
+  // 無ければ作成
+  if (!p) {
+    const display = (user.user_metadata?.display_name as string) || user.email?.split('@')[0] || 'user';
+    const { error: e2 } = await supabase.from('profiles').insert({ user_id: user.id, display_name: display });
+    if (e2) {
+      console.error(e2);
+      alert(e2.message);
+    }
+  }
+}
+
+  
   return (
     <div>
       <div className="p-2 bg-slate-900 text-slate-200 text-sm flex justify-end">
