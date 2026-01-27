@@ -1,47 +1,43 @@
+// src/PointEconomy.tsx
 import { useEffect, useMemo, useState } from 'react';
+import { PlusCircle, TrendingUp, ArrowRightLeft, BarChart3, CheckCircle } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
-type CurrencyRow = {
+type Currency = {
   id: string;
   economy_id: string;
   name: string;
   symbol: string;
   rules: string | null;
   color: string;
-  created_at: string;
+  created_at?: string;
 };
 
-type BalanceRow = {
-  economy_id: string;
-  currency_id: string;
-  balance: number;
-};
-
-type ActivityRow = {
+type Activity = {
   id: string;
   economy_id: string;
   currency_id: string;
   description: string;
   points: number;
-  created_by: string;
   created_at: string;
+  created_by: string;
 };
 
-type ExchangeRequestRow = {
+type ExchangeRequest = {
   id: string;
   economy_id: string;
   from_currency_id: string;
   to_currency_id: string;
   amount_from: number;
-  status: 'open' | 'finalized' | 'cancelled';
-  created_by: string;
+  status: string; // enum exchange_status の値
   created_at: string;
-  finalized_at: string | null;
-  final_rate: number | null;
-  amount_to: number | null;
+  created_by: string;
+  finalized_at?: string | null;
+  final_rate?: number | null;
+  amount_to?: number | null;
 };
 
-type RateSubmissionRow = {
+type RateSubmission = {
   id: string;
   economy_id: string;
   request_id: string;
@@ -50,73 +46,62 @@ type RateSubmissionRow = {
   created_at: string;
 };
 
-export default function PointEconomy({ economyId }: { economyId: string }) {
+type Props = { economyId: string };
+
+export default function PointEconomy({ economyId }: Props) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'currencies' | 'activities' | 'exchange'>('dashboard');
 
-  const [currencies, setCurrencies] = useState<CurrencyRow[]>([]);
+  const [me, setMe] = useState<{ id: string; email?: string } | null>(null);
+
+  const [profiles, setProfiles] = useState<Record<string, string>>({}); // user_id -> display_name
+
+  const [currencies, setCurrencies] = useState<Currency[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
+
+  // 財布（残高）: currency_id -> balance
   const [balances, setBalances] = useState<Record<string, number>>({});
 
-  const [activities, setActivities] = useState<ActivityRow[]>([]);
-
-  const [requests, setRequests] = useState<ExchangeRequestRow[]>([]);
-  const [selectedRequestId, setSelectedRequestId] = useState<string>('');
-  const selectedRequest = useMemo(
-    () => requests.find(r => r.id === selectedRequestId) || null,
-    [requests, selectedRequestId]
-  );
-  const [submissions, setSubmissions] = useState<RateSubmissionRow[]>([]);
-
+  // 作成フォーム
   const [newCurrency, setNewCurrency] = useState({ name: '', symbol: '', rules: '', color: '#3b82f6' });
   const [newActivity, setNewActivity] = useState({ currencyId: '', description: '', points: '' });
 
+  // Exchange
+  const [requests, setRequests] = useState<ExchangeRequest[]>([]);
+  const [selectedRequestId, setSelectedRequestId] = useState<string>('');
+  const selectedRequest = useMemo(
+    () => requests.find((r) => r.id === selectedRequestId) ?? null,
+    [requests, selectedRequestId]
+  );
+
+  const [rateSubmissions, setRateSubmissions] = useState<RateSubmission[]>([]);
+  const avgRate = useMemo(() => {
+    if (!rateSubmissions.length) return null;
+    const sum = rateSubmissions.reduce((s, r) => s + Number(r.rate), 0);
+    return sum / rateSubmissions.length;
+  }, [rateSubmissions]);
+
   const [newRequest, setNewRequest] = useState({ fromId: '', toId: '', amount: '' });
-  const [newRate, setNewRate] = useState({ rate: '' });
+  const [myRate, setMyRate] = useState('');
 
-  const currencyById = useMemo(() => {
-    const m = new Map<string, CurrencyRow>();
-    currencies.forEach(c => m.set(c.id, c));
-    return m;
-  }, [currencies]);
-
-  const totalValue = useMemo(() => {
-    return Object.values(balances).reduce((s, v) => s + (Number.isFinite(v) ? v : 0), 0);
-  }, [balances]);
-
-  const [profiles, setProfiles] = useState<Record<string, string>>({});
+  // ---------------------------
+  // Loaders
+  // ---------------------------
+  async function loadMe() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    const u = data.session?.user;
+    setMe(u ? { id: u.id, email: u.email ?? undefined } : null);
+  }
 
   async function loadProfiles() {
-    const { data, error } = await supabase.from('profiles').select('user_id,display_name');
+    const { data, error } = await supabase.from('profiles').select('user_id, display_name');
     if (error) return alert(error.message);
     const m: Record<string, string> = {};
     (data ?? []).forEach((p: any) => (m[p.user_id] = p.display_name || p.user_id.slice(0, 6)));
     setProfiles(m);
-  }
-
-  const [activityScope, setActivityScope] = useState<'mine'|'all'>('all');
-
-  const { data: s } = await supabase.auth.getSession();
-  const uid = s.session?.user?.id;
-  const visible = activityScope === 'mine'
-  ? activities.filter(a => a.created_by === uid)
-  : activities;
-
-  <div className="flex gap-2 mb-3">
-  <button onClick={() => setActivityScope('all')} className={`px-3 py-2 rounded ${activityScope==='all'?'bg-purple-600':'bg-slate-700'}`}>全体</button>
-  <button onClick={() => setActivityScope('mine')} className={`px-3 py-2 rounded ${activityScope==='mine'?'bg-purple-600':'bg-slate-700'}`}>自分</button>
-  </div>
-  <div className="text-xs text-slate-300">
-  {profiles[activity.created_by] ?? activity.created_by.slice(0,6)}
-  </div>
-
-
-  function symbol(id: string) {
-    return currencyById.get(id)?.symbol || '';
-  }
-  function name(id: string) {
-    return currencyById.get(id)?.name || '';
-  }
-  function bal(id: string) {
-    return balances[id] ?? 0;
   }
 
   async function loadCurrencies() {
@@ -125,27 +110,10 @@ export default function PointEconomy({ economyId }: { economyId: string }) {
       .select('*')
       .eq('economy_id', economyId)
       .order('created_at', { ascending: true });
+
     if (error) return alert(error.message);
-    setCurrencies((data ?? []) as CurrencyRow[]);
+    setCurrencies((data ?? []) as Currency[]);
   }
-
-  async function loadBalances() {
-  const { data: s } = await supabase.auth.getSession();
-  const uid = s.session?.user?.id;
-  if (!uid) return;
-
-  const { data, error } = await supabase
-    .from('currency_balances_by_user')
-    .select('economy_id,user_id,currency_id,balance')
-    .eq('economy_id', economyId)
-    .eq('user_id', uid);
-
-  if (error) return alert(error.message);
-
-  const map: Record<string, number> = {};
-  (data ?? []).forEach((r: any) => { map[r.currency_id] = Number(r.balance); });
-  setBalances(map);
-}
 
   async function loadActivities() {
     const { data, error } = await supabase
@@ -153,9 +121,38 @@ export default function PointEconomy({ economyId }: { economyId: string }) {
       .select('*')
       .eq('economy_id', economyId)
       .order('created_at', { ascending: false })
-      .limit(200);
+      .limit(500);
+
     if (error) return alert(error.message);
-    setActivities((data ?? []) as ActivityRow[]);
+
+    // points が string の環境もあるので Number化
+    const rows = (data ?? []).map((a: any) => ({
+      ...a,
+      points: Number(a.points),
+    })) as Activity[];
+    setActivities(rows);
+  }
+
+  async function loadBalances() {
+    // ユーザー別財布：view currency_balances_by_user を読む
+    const { data: s, error: e0 } = await supabase.auth.getSession();
+    if (e0) return alert(e0.message);
+    const uid = s.session?.user?.id;
+    if (!uid) return;
+
+    const { data, error } = await supabase
+      .from('currency_balances_by_user')
+      .select('currency_id, balance')
+      .eq('economy_id', economyId)
+      .eq('user_id', uid);
+
+    if (error) return alert(error.message);
+
+    const map: Record<string, number> = {};
+    (data ?? []).forEach((r: any) => {
+      map[r.currency_id] = Number(r.balance);
+    });
+    setBalances(map);
   }
 
   async function loadRequests() {
@@ -165,409 +162,642 @@ export default function PointEconomy({ economyId }: { economyId: string }) {
       .eq('economy_id', economyId)
       .order('created_at', { ascending: false })
       .limit(200);
+
     if (error) return alert(error.message);
-    setRequests((data ?? []) as ExchangeRequestRow[]);
+
+    const rows = (data ?? []).map((r: any) => ({
+      ...r,
+      amount_from: Number(r.amount_from),
+      final_rate: r.final_rate == null ? null : Number(r.final_rate),
+      amount_to: r.amount_to == null ? null : Number(r.amount_to),
+    })) as ExchangeRequest[];
+
+    setRequests(rows);
   }
 
-  async function loadSubmissions(requestId: string) {
+  async function loadRateSubmissions(requestId: string) {
+    if (!requestId) {
+      setRateSubmissions([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('exchange_rate_submissions')
       .select('*')
-      .eq('economy_id', economyId)
       .eq('request_id', requestId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: true });
+
     if (error) return alert(error.message);
-    setSubmissions((data ?? []) as RateSubmissionRow[]);
+
+    const rows = (data ?? []).map((s: any) => ({ ...s, rate: Number(s.rate) })) as RateSubmission[];
+    setRateSubmissions(rows);
   }
 
+  // 初期ロード
   useEffect(() => {
     if (!economyId) return;
-    loadCurrencies();
-    loadBalances();
-    loadActivities();
-    loadRequests();
-    setSelectedRequestId('');
-    setSubmissions([]);
+    (async () => {
+      await loadMe();
+      await Promise.all([loadProfiles(), loadCurrencies(), loadActivities(), loadBalances(), loadRequests()]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [economyId]);
 
+  // request 選択が変わったら rates をロード
   useEffect(() => {
-    if (!selectedRequestId) return;
-    loadSubmissions(selectedRequestId);
+    if (!selectedRequestId) {
+      setRateSubmissions([]);
+      setMyRate('');
+      return;
+    }
+    loadRateSubmissions(selectedRequestId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRequestId]);
 
-  const addCurrency = async () => {
-    if (!newCurrency.name || !newCurrency.symbol) return;
+  // ---------------------------
+  // Helpers
+  // ---------------------------
+  function cById(id: string) {
+    return currencies.find((c) => c.id === id) ?? null;
+  }
+  function cLabel(id: string) {
+    const c = cById(id);
+    return c ? `${c.name} (${c.symbol})` : id.slice(0, 6);
+  }
+  function who(userId: string) {
+    return profiles[userId] || userId.slice(0, 6);
+  }
+  function myBalance(currencyId: string) {
+    return Number(balances[currencyId] ?? 0);
+  }
+
+  const totalValue = useMemo(() => {
+    // 同一単位ではないが、UI上の「総数」指標として財布合計を出す
+    return Object.values(balances).reduce((s, v) => s + Number(v), 0);
+  }, [balances]);
+
+  // ---------------------------
+  // Mutations
+  // ---------------------------
+  async function addCurrency() {
+    if (!newCurrency.name.trim() || !newCurrency.symbol.trim()) return;
 
     const { error } = await supabase.from('currencies').insert({
       economy_id: economyId,
-      name: newCurrency.name,
-      symbol: newCurrency.symbol,
-      rules: newCurrency.rules || null,
+      name: newCurrency.name.trim(),
+      symbol: newCurrency.symbol.trim(),
+      rules: newCurrency.rules.trim() ? newCurrency.rules.trim() : null,
       color: newCurrency.color,
     });
+
     if (error) return alert(error.message);
 
     setNewCurrency({ name: '', symbol: '', rules: '', color: '#3b82f6' });
     await loadCurrencies();
-  };
+  }
 
-  const addActivity = async () => {
-    if (!newActivity.currencyId || !newActivity.description || !newActivity.points) return;
-    const points = Number(newActivity.points);
-    if (!Number.isFinite(points)) return;
+  async function addActivity() {
+    const currencyId = newActivity.currencyId;
+    const description = newActivity.description.trim();
+    const pointsStr = newActivity.points;
+
+    if (!currencyId || !description || !pointsStr) return;
+
+    const pts = Number(pointsStr);
+    if (!Number.isFinite(pts)) return;
 
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
-    if (!uid) return alert('not logged in');
+    if (!uid) return alert('not authenticated');
 
     const { error } = await supabase.from('activities').insert({
       economy_id: economyId,
-      currency_id: newActivity.currencyId,
-      description: newActivity.description,
-      points,
+      currency_id: currencyId,
+      description,
+      points: pts,
       created_by: uid,
     });
+
     if (error) return alert(error.message);
 
     setNewActivity({ currencyId: '', description: '', points: '' });
-    await loadActivities();
-    await loadBalances();
-  };
+    await Promise.all([loadActivities(), loadBalances()]);
+  }
 
-  const createRequest = async () => {
-    if (!newRequest.fromId || !newRequest.toId || !newRequest.amount) return;
-    const amount = Number(newRequest.amount);
-    if (!Number.isFinite(amount) || amount <= 0) return;
+  async function createRequest() {
+    const fromId = newRequest.fromId;
+    const toId = newRequest.toId;
+    const amt = Number(newRequest.amount);
+
+    if (!fromId || !toId || !Number.isFinite(amt) || amt <= 0) return;
+    if (fromId === toId) return alert('交換元と交換先は別にしてください');
 
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
-    if (!uid) return alert('not logged in');
+    if (!uid) return alert('not authenticated');
 
-    if (bal(newRequest.fromId) < amount) return alert('残高不足');
+    // 自分財布の残高チェック（view基準）
+    if (myBalance(fromId) < amt) return alert('残高不足です');
 
-    const { error } = await supabase.from('exchange_requests').insert({
-      economy_id: economyId,
-      from_currency_id: newRequest.fromId,
-      to_currency_id: newRequest.toId,
-      amount_from: amount,
-      created_by: uid,
-      status: 'open',
-    });
+    const { data, error } = await supabase
+      .from('exchange_requests')
+      .insert({
+        economy_id: economyId,
+        from_currency_id: fromId,
+        to_currency_id: toId,
+        amount_from: amt,
+        status: 'open',
+        created_by: uid,
+      })
+      .select('*')
+      .single();
+
     if (error) return alert(error.message);
 
     setNewRequest({ fromId: '', toId: '', amount: '' });
     await loadRequests();
-  };
+    if (data?.id) setSelectedRequestId(String(data.id));
+  }
 
-  const submitRate = async () => {
+  async function submitRate() {
     if (!selectedRequest) return;
-    if (selectedRequest.status !== 'open') return;
-    if (!newRate.rate) return;
+    if (!myRate) return;
 
-    const rate = Number(newRate.rate);
-    if (!Number.isFinite(rate) || rate <= 0) return;
+    const rate = Number(myRate);
+    if (!Number.isFinite(rate) || rate <= 0) return alert('rate を正しく入力してください');
 
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
-    if (!uid) return alert('not logged in');
+    if (!uid) return alert('not authenticated');
 
-    const { error } = await supabase.from('exchange_rate_submissions').insert({
-      economy_id: economyId,
-      request_id: selectedRequest.id,
-      submitted_by: uid,
-      rate,
-    });
+    // unique(request_id, submitted_by) を前提に upsert
+    const { error } = await supabase.from('exchange_rate_submissions').upsert(
+      {
+        economy_id: selectedRequest.economy_id,
+        request_id: selectedRequest.id,
+        submitted_by: uid,
+        rate,
+      },
+      { onConflict: 'request_id,submitted_by' }
+    );
+
     if (error) return alert(error.message);
 
-    setNewRate({ rate: '' });
-    await loadSubmissions(selectedRequest.id);
-  };
+    setMyRate('');
+    await loadRateSubmissions(selectedRequest.id);
+  }
 
-  const finalizeSelected = async () => {
+  async function finalizeSelected() {
     if (!selectedRequest) return;
-    if (selectedRequest.status !== 'open') return;
 
-    const { error } = await supabase.rpc('finalize_exchange_request', { p_request_id: selectedRequest.id });
+    const { data, error } = await supabase.rpc('finalize_exchange_request', { p_request_id: selectedRequest.id });
+
     if (error) return alert(error.message);
 
-    await loadRequests();
-    await loadBalances();
-    await loadSubmissions(selectedRequest.id);
-  };
+    // finalize 成功後に refresh
+    await Promise.all([loadRequests(), loadBalances()]);
+    // data は exchange_id の想定だが表示は任意
+    console.log('finalized exchange id:', data);
+  }
 
-  const avgRate = useMemo(() => {
-    if (submissions.length === 0) return null;
-    const sum = submissions.reduce((s, r) => s + Number(r.rate), 0);
-    return sum / submissions.length;
-  }, [submissions]);
-
+  // ---------------------------
+  // UI
+  // ---------------------------
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
       <div className="max-w-6xl mx-auto">
-        <header className="mb-6">
-          <div className="text-slate-300 text-sm">economyId: {economyId}</div>
-          <h1 className="text-3xl font-bold">マイナー資本主義</h1>
+        <header className="mb-6 text-center">
+          <h1 className="text-4xl font-bold mb-1 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+            マイナー資本主義
+          </h1>
+          <p className="text-slate-300 text-sm">
+            economy: <span className="font-mono">{economyId}</span>
+            {me ? (
+              <>
+                {' '}
+                / user: <span className="font-semibold">{who(me.id)}</span>
+              </>
+            ) : null}
+          </p>
         </header>
 
-        <nav className="flex gap-2 mb-6 bg-slate-800/60 p-2 rounded">
+        <nav className="flex flex-wrap gap-2 mb-6 bg-slate-800/50 p-2 rounded-lg backdrop-blur">
           {[
-            { id: 'dashboard', label: 'ダッシュボード' },
-            { id: 'currencies', label: 'ポイント銘柄' },
-            { id: 'activities', label: '活動記録' },
-            { id: 'exchange', label: '交換（合意制）' },
-          ].map(t => (
+            { id: 'dashboard', icon: BarChart3, label: 'ダッシュボード' },
+            { id: 'currencies', icon: TrendingUp, label: 'ポイント銘柄' },
+            { id: 'activities', icon: CheckCircle, label: '活動記録' },
+            { id: 'exchange', icon: ArrowRightLeft, label: '交換' },
+          ].map((tab: any) => (
             <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id as any)}
-              className={`px-4 py-2 rounded ${activeTab === t.id ? 'bg-purple-600' : 'bg-slate-700 hover:bg-slate-600'}`}
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-4 py-2 rounded transition ${
+                activeTab === tab.id ? 'bg-purple-600 text-white' : 'text-slate-300 hover:bg-slate-700'
+              }`}
             >
-              {t.label}
+              <tab.icon size={18} />
+              {tab.label}
             </button>
           ))}
         </nav>
 
+        {/* Dashboard */}
         {activeTab === 'dashboard' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="text-slate-400 text-sm">総ポイント数（残高合計）</div>
-              <div className="text-3xl font-bold">{totalValue.toFixed(2)}</div>
-            </div>
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="text-slate-400 text-sm">銘柄数</div>
-              <div className="text-3xl font-bold">{currencies.length}</div>
-            </div>
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="text-slate-400 text-sm">活動数</div>
-              <div className="text-3xl font-bold">{activities.length}</div>
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+                <div className="text-slate-400 text-sm mb-2">総ポイント（自分財布の合計）</div>
+                <div className="text-3xl font-bold">{totalValue.toFixed(2)}</div>
+              </div>
+              <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+                <div className="text-slate-400 text-sm mb-2">保有銘柄数</div>
+                <div className="text-3xl font-bold">{currencies.length}</div>
+              </div>
+              <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+                <div className="text-slate-400 text-sm mb-2">活動数（全体）</div>
+                <div className="text-3xl font-bold">{activities.length}</div>
+              </div>
             </div>
 
-            <div className="md:col-span-3 bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="font-semibold mb-3">保有ポイント（残高）</div>
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between gap-2 mb-4">
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <TrendingUp size={24} />
+                  保有ポイント（自分）
+                </h2>
+                <button
+                  onClick={loadBalances}
+                  className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
+                >
+                  残高再計算
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {currencies.map((currency) => (
+                  <div key={currency.id} className="flex items-center justify-between p-4 bg-slate-700/50 rounded">
+                    <div className="flex items-center gap-3">
+                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: currency.color }} />
+                      <div>
+                        <div className="font-semibold">{currency.name}</div>
+                        <div className="text-sm text-slate-400">{currency.symbol}</div>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-bold">{myBalance(currency.id).toFixed(2)}</div>
+                  </div>
+                ))}
+                {currencies.length === 0 && <p className="text-slate-400 text-center py-8">まだ銘柄がありません</p>}
+              </div>
+            </div>
+
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <h2 className="text-xl font-bold mb-4">最近の活動（全体）</h2>
               <div className="space-y-2">
-                {currencies.map(c => (
-                  <div key={c.id} className="flex justify-between bg-slate-700/60 p-3 rounded">
+                {activities.slice(0, 5).map((a) => (
+                  <div key={a.id} className="flex justify-between items-center p-3 bg-slate-700/30 rounded">
                     <div>
-                      <div className="font-semibold">{c.name}</div>
-                      <div className="text-slate-300 text-sm">{c.symbol}</div>
+                      <div className="text-sm">{a.description}</div>
+                      <div className="text-xs text-slate-400">
+                        {new Date(a.created_at).toLocaleString('ja-JP')} / {who(a.created_by)} / {cLabel(a.currency_id)}
+                      </div>
                     </div>
-                    <div className="text-2xl font-bold">{bal(c.id).toFixed(2)}</div>
+                    <div className="text-right">
+                      <div className="text-green-400 font-bold">+{Number(a.points).toFixed(2)}</div>
+                    </div>
                   </div>
                 ))}
-                {currencies.length === 0 && <div className="text-slate-300">通貨がありません</div>}
+                {activities.length === 0 && <p className="text-slate-400 text-center py-8">まだ活動記録がありません</p>}
               </div>
             </div>
           </div>
         )}
 
+        {/* Currencies */}
         {activeTab === 'currencies' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="font-semibold mb-3">新規銘柄</div>
-              <div className="grid gap-2">
-                <input className="p-3 rounded bg-slate-700" placeholder="name" value={newCurrency.name}
-                  onChange={e => setNewCurrency({ ...newCurrency, name: e.target.value })} />
-                <input className="p-3 rounded bg-slate-700" placeholder="symbol" value={newCurrency.symbol}
-                  onChange={e => setNewCurrency({ ...newCurrency, symbol: e.target.value })} />
-                <textarea className="p-3 rounded bg-slate-700" placeholder="rules" value={newCurrency.rules}
-                  onChange={e => setNewCurrency({ ...newCurrency, rules: e.target.value })} />
-                <button onClick={addCurrency} className="p-3 rounded bg-purple-600 hover:bg-purple-500 font-semibold">
-                  作成
+          <div className="space-y-6">
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                <PlusCircle size={24} />
+                新しいポイント銘柄を作成
+              </h2>
+
+              <div className="space-y-4">
+                <input
+                  type="text"
+                  placeholder="銘柄名（例：哲学書ポイント）"
+                  value={newCurrency.name}
+                  onChange={(e) => setNewCurrency({ ...newCurrency, name: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                />
+                <input
+                  type="text"
+                  placeholder="シンボル（例：PHIL）"
+                  value={newCurrency.symbol}
+                  onChange={(e) => setNewCurrency({ ...newCurrency, symbol: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                />
+                <textarea
+                  placeholder="獲得ルール（例：30分読書で10pt）"
+                  value={newCurrency.rules}
+                  onChange={(e) => setNewCurrency({ ...newCurrency, rules: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none h-24"
+                />
+                <div className="flex items-center gap-3">
+                  <label className="text-slate-300">カラー:</label>
+                  <input
+                    type="color"
+                    value={newCurrency.color}
+                    onChange={(e) => setNewCurrency({ ...newCurrency, color: e.target.value })}
+                    className="w-16 h-10 rounded cursor-pointer"
+                  />
+                </div>
+
+                <button onClick={addCurrency} className="w-full bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold">
+                  作成する
                 </button>
               </div>
             </div>
 
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="font-semibold mb-3">銘柄一覧</div>
-              <div className="space-y-2">
-                {currencies.map(c => (
-                  <div key={c.id} className="p-3 rounded bg-slate-700/60">
-                    <div className="font-semibold">{c.name} <span className="text-slate-300">({c.symbol})</span></div>
-                    {c.rules && <div className="text-slate-300 text-sm mt-1">{c.rules}</div>}
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold">登録済み銘柄</h2>
+                <button onClick={loadCurrencies} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+                  再読み込み
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {currencies.map((currency) => (
+                  <div key={currency.id} className="p-4 bg-slate-700/50 rounded">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-6 h-6 rounded-full" style={{ backgroundColor: currency.color }} />
+                      <div className="font-bold text-lg">{currency.name}</div>
+                      <div className="text-slate-400">({currency.symbol})</div>
+                    </div>
+                    {currency.rules && (
+                      <div className="text-sm text-slate-300 mt-2 p-3 bg-slate-800/50 rounded">
+                        <div className="font-semibold text-slate-400 mb-1">獲得ルール:</div>
+                        {currency.rules}
+                      </div>
+                    )}
                   </div>
                 ))}
-                {currencies.length === 0 && <div className="text-slate-300">なし</div>}
+                {currencies.length === 0 && <p className="text-slate-400 text-center py-8">まだ銘柄がありません</p>}
               </div>
             </div>
           </div>
         )}
 
+        {/* Activities */}
         {activeTab === 'activities' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="font-semibold mb-3">活動を記録</div>
-              <div className="grid gap-2">
-                <select className="p-3 rounded bg-slate-700"
+          <div className="space-y-6">
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                <CheckCircle size={24} />
+                活動を記録してポイント獲得（自分財布）
+              </h2>
+
+              <div className="space-y-4">
+                <select
                   value={newActivity.currencyId}
-                  onChange={e => setNewActivity({ ...newActivity, currencyId: e.target.value })}>
-                  <option value="">通貨を選択</option>
-                  {currencies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.symbol})</option>)}
+                  onChange={(e) => setNewActivity({ ...newActivity, currencyId: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                >
+                  <option value="">ポイント銘柄を選択</option>
+                  {currencies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.symbol})
+                    </option>
+                  ))}
                 </select>
-                <input className="p-3 rounded bg-slate-700" placeholder="description"
+
+                <input
+                  type="text"
+                  placeholder="活動内容（例：英語30分）"
                   value={newActivity.description}
-                  onChange={e => setNewActivity({ ...newActivity, description: e.target.value })} />
-                <input className="p-3 rounded bg-slate-700" placeholder="points"
+                  onChange={(e) => setNewActivity({ ...newActivity, description: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                />
+
+                <input
                   type="number"
+                  step="0.01"
+                  placeholder="獲得ポイント"
                   value={newActivity.points}
-                  onChange={e => setNewActivity({ ...newActivity, points: e.target.value })} />
-                <button onClick={addActivity} className="p-3 rounded bg-green-600 hover:bg-green-500 font-semibold">
-                  記録
+                  onChange={(e) => setNewActivity({ ...newActivity, points: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                />
+
+                <button onClick={addActivity} className="w-full bg-green-600 hover:bg-green-700 p-3 rounded font-semibold">
+                  記録する
                 </button>
               </div>
             </div>
 
-            <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="font-semibold mb-3">履歴</div>
-              <div className="space-y-2 max-h-[60vh] overflow-auto">
-                {activities.map(a => (
-                  <div key={a.id} className="p-3 rounded bg-slate-700/60">
-                    <div className="font-semibold">{a.description}</div>
-                    <div className="text-slate-300 text-sm">
-                      +{Number(a.points).toFixed(2)} {symbol(a.currency_id)} / {new Date(a.created_at).toLocaleString('ja-JP')}
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold">活動履歴（全体）</h2>
+                <button
+                  onClick={async () => {
+                    await Promise.all([loadActivities(), loadBalances()]);
+                  }}
+                  className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
+                >
+                  再読み込み
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {activities.map((a) => (
+                  <div key={a.id} className="p-4 bg-slate-700/50 rounded">
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="font-semibold">{a.description}</div>
+                        <div className="text-sm text-slate-400 mt-1">
+                          {new Date(a.created_at).toLocaleString('ja-JP')} / {who(a.created_by)} / {cLabel(a.currency_id)}
+                        </div>
+                      </div>
+                      <div className="text-right ml-4">
+                        <div className="text-green-400 font-bold text-lg">+{Number(a.points).toFixed(2)}</div>
+                      </div>
                     </div>
                   </div>
                 ))}
-                {activities.length === 0 && <div className="text-slate-300">なし</div>}
+                {activities.length === 0 && <p className="text-slate-400 text-center py-8">まだ活動記録がありません</p>}
               </div>
             </div>
           </div>
         )}
 
+        {/* Exchange */}
         {activeTab === 'exchange' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-1 bg-slate-800/60 p-5 rounded border border-slate-700">
-              <div className="font-semibold mb-3">RequestList</div>
-              <button onClick={loadRequests} className="mb-3 px-3 py-2 rounded bg-slate-700 hover:bg-slate-600">
-                更新
-              </button>
-              <div className="space-y-2 max-h-[55vh] overflow-auto">
-                {requests.map(r => (
-                  <button
-                    key={r.id}
-                    onClick={() => setSelectedRequestId(r.id)}
-                    className={`w-full text-left p-3 rounded ${selectedRequestId === r.id ? 'bg-purple-700' : 'bg-slate-700/60 hover:bg-slate-700'}`}
-                  >
-                    <div className="font-semibold">
-                      {symbol(r.from_currency_id)} → {symbol(r.to_currency_id)} / {Number(r.amount_from).toFixed(2)}
-                    </div>
-                    <div className="text-xs text-slate-300">
-                      {r.status} / {new Date(r.created_at).toLocaleString('ja-JP')}
-                    </div>
-                  </button>
-                ))}
-                {requests.length === 0 && <div className="text-slate-300">リクエストなし</div>}
+          <div className="space-y-6">
+            {/* Create request */}
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                <ArrowRightLeft size={24} />
+                交換リクエスト作成（自分財布）
+              </h2>
+
+              <div className="space-y-4">
+                <select
+                  value={newRequest.fromId}
+                  onChange={(e) => setNewRequest({ ...newRequest, fromId: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                >
+                  <option value="">交換元ポイント</option>
+                  {currencies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} (自分残高: {myBalance(c.id).toFixed(2)})
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={newRequest.toId}
+                  onChange={(e) => setNewRequest({ ...newRequest, toId: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                >
+                  <option value="">交換先ポイント</option>
+                  {currencies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="交換量（from）"
+                  value={newRequest.amount}
+                  onChange={(e) => setNewRequest({ ...newRequest, amount: e.target.value })}
+                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                />
+
+                <button onClick={createRequest} className="w-full bg-blue-600 hover:bg-blue-700 p-3 rounded font-semibold">
+                  Request作成
+                </button>
               </div>
             </div>
 
-            <div className="lg:col-span-2 space-y-4">
-              <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-                <div className="font-semibold mb-3">新規リクエスト</div>
-                <div className="grid md:grid-cols-4 gap-2">
-                  <select className="p-3 rounded bg-slate-700"
-                    value={newRequest.fromId}
-                    onChange={e => setNewRequest({ ...newRequest, fromId: e.target.value })}>
-                    <option value="">from</option>
-                    {currencies.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.symbol} (残高 {bal(c.id).toFixed(2)})
-                      </option>
-                    ))}
-                  </select>
-
-                  <select className="p-3 rounded bg-slate-700"
-                    value={newRequest.toId}
-                    onChange={e => setNewRequest({ ...newRequest, toId: e.target.value })}>
-                    <option value="">to</option>
-                    {currencies.map(c => <option key={c.id} value={c.id}>{c.symbol}</option>)}
-                  </select>
-
-                  <input className="p-3 rounded bg-slate-700" placeholder="amount"
-                    type="number"
-                    value={newRequest.amount}
-                    onChange={e => setNewRequest({ ...newRequest, amount: e.target.value })} />
-
-                  <button onClick={createRequest} className="p-3 rounded bg-blue-600 hover:bg-blue-500 font-semibold">
-                    Request作成
+            {/* Request list + detail */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* List */}
+              <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-bold">RequestList</h2>
+                  <button onClick={loadRequests} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+                    再読み込み
                   </button>
+                </div>
+
+                <div className="space-y-2">
+                  {requests.map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => setSelectedRequestId(r.id)}
+                      className={`w-full text-left p-3 rounded border transition ${
+                        selectedRequestId === r.id
+                          ? 'bg-purple-700/40 border-purple-500'
+                          : 'bg-slate-700/30 border-slate-700 hover:bg-slate-700/50'
+                      }`}
+                    >
+                      <div className="text-sm font-semibold">
+                        {cById(r.from_currency_id)?.symbol ?? '???'} → {cById(r.to_currency_id)?.symbol ?? '???'}
+                      </div>
+                      <div className="text-xs text-slate-300 mt-1">
+                        amount_from: {Number(r.amount_from).toFixed(2)} / status: {r.status} / by: {who(r.created_by)}
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">{new Date(r.created_at).toLocaleString('ja-JP')}</div>
+                    </button>
+                  ))}
+                  {requests.length === 0 && <p className="text-slate-400 text-center py-8">まだrequestがありません</p>}
                 </div>
               </div>
 
-              <div className="bg-slate-800/60 p-5 rounded border border-slate-700">
-                <div className="font-semibold mb-3">RequestDetail</div>
+              {/* Detail */}
+              <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+                <h2 className="text-xl font-bold mb-4">RequestDetail</h2>
 
-                {!selectedRequest && <div className="text-slate-300">左のリストから選択してください</div>}
-
-                {selectedRequest && (
-                  <>
-                    <div className="text-slate-200">
+                {!selectedRequest ? (
+                  <div className="text-slate-300">左のリストから request を選んでください。</div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="p-4 bg-slate-700/40 rounded">
                       <div className="font-semibold">
-                        {name(selectedRequest.from_currency_id)} ({symbol(selectedRequest.from_currency_id)}) →
-                        {name(selectedRequest.to_currency_id)} ({symbol(selectedRequest.to_currency_id)})
+                        {cLabel(selectedRequest.from_currency_id)} → {cLabel(selectedRequest.to_currency_id)}
                       </div>
-                      <div className="text-sm text-slate-300">
+                      <div className="text-sm text-slate-300 mt-1">
                         amount_from: {Number(selectedRequest.amount_from).toFixed(2)} / status: {selectedRequest.status}
                       </div>
+                      <div className="text-xs text-slate-400 mt-1">
+                        by {who(selectedRequest.created_by)} / {new Date(selectedRequest.created_at).toLocaleString('ja-JP')}
+                      </div>
                       {selectedRequest.status === 'finalized' && (
-                        <div className="text-sm text-slate-300 mt-2">
-                          final_rate(avg): {Number(selectedRequest.final_rate).toFixed(6)} /
-                          amount_to: {Number(selectedRequest.amount_to).toFixed(2)} /
-                          finalized_at: {selectedRequest.finalized_at ? new Date(selectedRequest.finalized_at).toLocaleString('ja-JP') : '-'}
+                        <div className="text-xs text-slate-200 mt-2">
+                          final_rate: {selectedRequest.final_rate ?? '—'} / amount_to: {selectedRequest.amount_to ?? '—'}
                         </div>
                       )}
                     </div>
 
-                    <div className="mt-4 grid md:grid-cols-3 gap-2 items-end">
-                      <div className="md:col-span-1">
-                        <div className="text-sm text-slate-300 mb-1">SubmitRate</div>
-                        <input className="w-full p-3 rounded bg-slate-700" placeholder="rate"
-                          type="number" step="0.000001"
-                          value={newRate.rate}
-                          onChange={e => setNewRate({ rate: e.target.value })} />
-                      </div>
+                    {/* SubmitRate */}
+                    <div className="p-4 bg-slate-700/30 rounded">
+                      <div className="font-semibold mb-2">SubmitRate</div>
+
+                      <input
+                        type="number"
+                        step="0.000001"
+                        placeholder="rate（例：2.0）"
+                        value={myRate}
+                        onChange={(e) => setMyRate(e.target.value)}
+                        className="w-full p-3 bg-slate-800 rounded border border-slate-600 focus:border-purple-500 outline-none"
+                      />
 
                       <button
-                        disabled={selectedRequest.status !== 'open'}
                         onClick={submitRate}
-                        className={`p-3 rounded font-semibold ${selectedRequest.status === 'open' ? 'bg-green-600 hover:bg-green-500' : 'bg-slate-700 cursor-not-allowed'}`}
+                        className="w-full mt-3 bg-green-600 hover:bg-green-700 p-3 rounded font-semibold"
                       >
                         レート提出
                       </button>
 
                       <button
-                        disabled={selectedRequest.status !== 'open'}
                         onClick={finalizeSelected}
-                        className={`p-3 rounded font-semibold ${selectedRequest.status === 'open' ? 'bg-purple-600 hover:bg-purple-500' : 'bg-slate-700 cursor-not-allowed'}`}
+                        className="w-full mt-3 bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold"
                       >
                         Finalize（平均で確定）
                       </button>
                     </div>
 
-                    <div className="mt-4">
-                      <div className="text-sm text-slate-300 mb-2">
-                        提出済みレート（平均: {avgRate === null ? '-' : avgRate.toFixed(6)}）
+                    {/* Rates */}
+                    <div className="p-4 bg-slate-700/20 rounded">
+                      <div className="font-semibold mb-2">
+                        提出済みレート{avgRate != null ? `（平均: ${avgRate.toFixed(6)}）` : ''}
                       </div>
+
                       <div className="space-y-2">
-                        {submissions.map(s => (
-                          <div key={s.id} className="p-3 rounded bg-slate-700/60 flex justify-between">
-                            <div className="text-slate-200">{Number(s.rate).toFixed(6)}</div>
-                            <div className="text-xs text-slate-300">{new Date(s.created_at).toLocaleString('ja-JP')}</div>
+                        {rateSubmissions.map((s) => (
+                          <div key={s.id} className="flex items-center justify-between p-3 bg-slate-800/60 rounded">
+                            <div className="text-sm">{who(s.submitted_by)}</div>
+                            <div className="font-mono text-sm">{Number(s.rate).toFixed(6)}</div>
                           </div>
                         ))}
-                        {submissions.length === 0 && <div className="text-slate-300">まだ提出なし</div>}
+                        {rateSubmissions.length === 0 && <div className="text-slate-300">まだ提出がありません</div>}
                       </div>
                     </div>
-                  </>
+
+                    <div className="text-xs text-slate-400">
+                      ※ finalize 後の残高反映は「自分財布」に対して行われます（currency_balances_by_user）。
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
           </div>
         )}
 
-        <div className="mt-8 flex gap-2 flex-wrap">
-          <button onClick={loadCurrencies} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">通貨再読込</button>
-          <button onClick={loadActivities} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">活動再読込</button>
-          <button onClick={loadBalances} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">残高再計算</button>
-          <button onClick={loadRequests} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">交換再読込</button>
-        </div>
+        <footer className="mt-10 text-center text-xs text-slate-400">
+          profiles が見えない/名前が出ない場合は、profiles テーブル作成と schema cache 更新、activities.created_by の存在を確認してください。
+        </footer>
       </div>
     </div>
   );
