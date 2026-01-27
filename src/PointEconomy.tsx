@@ -82,6 +82,33 @@ export default function PointEconomy({ economyId }: { economyId: string }) {
     return Object.values(balances).reduce((s, v) => s + (Number.isFinite(v) ? v : 0), 0);
   }, [balances]);
 
+  const [profiles, setProfiles] = useState<Record<string, string>>({});
+
+  async function loadProfiles() {
+    const { data, error } = await supabase.from('profiles').select('user_id,display_name');
+    if (error) return alert(error.message);
+    const m: Record<string, string> = {};
+    (data ?? []).forEach((p: any) => (m[p.user_id] = p.display_name || p.user_id.slice(0, 6)));
+    setProfiles(m);
+  }
+
+  const [activityScope, setActivityScope] = useState<'mine'|'all'>('all');
+
+  const { data: s } = await supabase.auth.getSession();
+  const uid = s.session?.user?.id;
+  const visible = activityScope === 'mine'
+  ? activities.filter(a => a.created_by === uid)
+  : activities;
+
+  <div className="flex gap-2 mb-3">
+  <button onClick={() => setActivityScope('all')} className={`px-3 py-2 rounded ${activityScope==='all'?'bg-purple-600':'bg-slate-700'}`}>全体</button>
+  <button onClick={() => setActivityScope('mine')} className={`px-3 py-2 rounded ${activityScope==='mine'?'bg-purple-600':'bg-slate-700'}`}>自分</button>
+  </div>
+  <div className="text-xs text-slate-300">
+  {profiles[activity.created_by] ?? activity.created_by.slice(0,6)}
+  </div>
+
+
   function symbol(id: string) {
     return currencyById.get(id)?.symbol || '';
   }
@@ -103,17 +130,22 @@ export default function PointEconomy({ economyId }: { economyId: string }) {
   }
 
   async function loadBalances() {
-    const { data, error } = await supabase
-      .from('currency_balances')
-      .select('economy_id,currency_id,balance')
-      .eq('economy_id', economyId);
+  const { data: s } = await supabase.auth.getSession();
+  const uid = s.session?.user?.id;
+  if (!uid) return;
 
-    if (error) return alert(error.message);
+  const { data, error } = await supabase
+    .from('currency_balances_by_user')
+    .select('economy_id,user_id,currency_id,balance')
+    .eq('economy_id', economyId)
+    .eq('user_id', uid);
 
-    const map: Record<string, number> = {};
-    ((data ?? []) as BalanceRow[]).forEach(r => { map[r.currency_id] = Number(r.balance); });
-    setBalances(map);
-  }
+  if (error) return alert(error.message);
+
+  const map: Record<string, number> = {};
+  (data ?? []).forEach((r: any) => { map[r.currency_id] = Number(r.balance); });
+  setBalances(map);
+}
 
   async function loadActivities() {
     const { data, error } = await supabase
