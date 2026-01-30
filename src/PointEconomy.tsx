@@ -56,6 +56,7 @@ export default function PointEconomy({ economyId }: Props) {
   // profiles: user_id -> display_name
   const [profiles, setProfiles] = useState<Record<string, string>>({});
   const [myDisplayName, setMyDisplayName] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState<string>('');
 
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -873,6 +874,166 @@ export default function PointEconomy({ economyId }: Props) {
         <footer className="mt-10 text-center text-xs text-slate-400">
           profiles が見えない場合：profiles テーブル作成 / RLS / schema cache 更新 / ensureProfileRow の alert を確認。
         </footer>
+      </div>
+    </div>
+  );
+}
+
+function MemberProfileModal({
+  open,
+  onClose,
+  economyId,
+  userId,
+  profiles,
+  currencies,
+}: {
+  open: boolean;
+  onClose: () => void;
+  economyId: string;
+  userId: string;
+  profiles: Record<string, string>;
+  currencies: { id: string; name: string; symbol: string; color: string }[];
+}) {
+  const [bio, setBio] = useState<string>('');
+  const [balances, setBalances] = useState<{ currency_id: string; balance: number }[]>([]);
+  const [recent, setRecent] = useState<any[]>([]);
+  const [isMe, setIsMe] = useState(false);
+
+  useEffect(() => {
+    if (!open || !economyId || !userId) return;
+
+    (async () => {
+      const { data: s } = await supabase.auth.getSession();
+      const meId = s.session?.user?.id;
+      setIsMe(meId === userId);
+
+      // 1) profile(bio)
+      const { data: p, error: e1 } = await supabase
+        .from('profiles')
+        .select('bio')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (e1) return alert(e1.message);
+      setBio((p?.bio as string) ?? '');
+
+      // 2) balances（その人の財布）
+      const { data: b, error: e2 } = await supabase
+        .from('currency_balances_by_user')
+        .select('currency_id, balance')
+        .eq('economy_id', economyId)
+        .eq('user_id', userId);
+      if (e2) return alert(e2.message);
+      setBalances((b ?? []).map((r: any) => ({ currency_id: r.currency_id, balance: Number(r.balance) })));
+
+      // 3) recent activities（その人の最近）
+      const { data: a, error: e3 } = await supabase
+        .from('activities')
+        .select('id, currency_id, points, description, created_at')
+        .eq('economy_id', economyId)
+        .eq('created_by', userId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      if (e3) return alert(e3.message);
+      setRecent((a ?? []).map((x: any) => ({ ...x, points: Number(x.points) })));
+    })();
+  }, [open, economyId, userId]);
+
+  async function saveBio() {
+    if (!isMe) return;
+    const text = bio ?? '';
+    const { error } = await supabase
+      .from('profiles')
+      .update({ bio: text, updated_at: new Date().toISOString() })
+      .eq('user_id', userId);
+    if (error) return alert(error.message);
+    alert('保存しました');
+  }
+
+  function cLabel(cid: string) {
+    const c = currencies.find((x) => x.id === cid);
+    return c ? `${c.name} (${c.symbol})` : cid.slice(0, 6);
+  }
+  function cColor(cid: string) {
+    return currencies.find((x) => x.id === cid)?.color ?? '#64748b';
+  }
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* overlay */}
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+
+      {/* modal */}
+      <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-xl shadow-xl p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-lg font-bold">
+              {profiles[userId] ?? userId.slice(0, 6)}
+              <span className="text-slate-400 text-sm ml-2 font-mono">{userId.slice(0, 8)}…</span>
+            </div>
+            <div className="text-xs text-slate-400 mt-1">メンバープロフィール</div>
+          </div>
+
+          <button onClick={onClose} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
+            閉じる
+          </button>
+        </div>
+
+        {/* bio */}
+        <div className="mt-5">
+          <div className="text-sm font-semibold text-slate-200 mb-2">コメント</div>
+          <textarea
+            className="w-full min-h-[90px] p-3 rounded bg-slate-800 border border-slate-700 outline-none focus:border-purple-500"
+            value={bio}
+            onChange={(e) => setBio(e.target.value)}
+            placeholder="自己紹介 / メモ（本人のみ編集可能）"
+            readOnly={!isMe}
+          />
+          {isMe && (
+            <button
+              onClick={saveBio}
+              className="mt-2 px-4 py-2 rounded bg-purple-600 hover:bg-purple-700 font-semibold text-sm"
+            >
+              コメント保存
+            </button>
+          )}
+          {!isMe && <div className="text-xs text-slate-500 mt-2">※他人のコメントは編集できません</div>}
+        </div>
+
+        {/* balances */}
+        <div className="mt-6">
+          <div className="text-sm font-semibold text-slate-200 mb-2">残高（この人の財布）</div>
+          <div className="space-y-2">
+            {balances.map((b) => (
+              <div key={b.currency_id} className="flex items-center justify-between p-3 rounded bg-slate-800/70">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: cColor(b.currency_id) }} />
+                  <div className="text-sm">{cLabel(b.currency_id)}</div>
+                </div>
+                <div className="font-mono">{Number(b.balance).toFixed(2)}</div>
+              </div>
+            ))}
+            {balances.length === 0 && <div className="text-slate-400 text-sm">まだ残高がありません</div>}
+          </div>
+        </div>
+
+        {/* recent activities */}
+        <div className="mt-6">
+          <div className="text-sm font-semibold text-slate-200 mb-2">最近の活動（この人）</div>
+          <div className="space-y-2 max-h-[240px] overflow-auto pr-1">
+            {recent.map((a) => (
+              <div key={a.id} className="p-3 rounded bg-slate-800/60">
+                <div className="text-sm">{a.description}</div>
+                <div className="text-xs text-slate-400 mt-1">
+                  {new Date(a.created_at).toLocaleString('ja-JP')} / {cLabel(a.currency_id)}
+                  <span className="ml-2 text-green-400 font-semibold">+{Number(a.points).toFixed(2)}</span>
+                </div>
+              </div>
+            ))}
+            {recent.length === 0 && <div className="text-slate-400 text-sm">まだ活動がありません</div>}
+          </div>
+        </div>
       </div>
     </div>
   );
