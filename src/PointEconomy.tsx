@@ -265,6 +265,17 @@ export default function PointEconomy({ economyId }: Props) {
     return Number(balances[currencyId] ?? 0);
   }
 
+  function UserLink({ userId }: { userId: string }) {
+    return (
+      <button
+        className="underline decoration-slate-500 hover:decoration-slate-200"
+        onClick={() => setSelectedUserId(userId)}
+      >
+        {who(userId)}
+      </button>
+    );
+  }
+
   const totalValue = useMemo(() => {
     // 通貨が混在するが、指標として財布合計を出す
     return Object.values(balances).reduce((s, v) => s + Number(v), 0);
@@ -430,7 +441,13 @@ export default function PointEconomy({ economyId }: Props) {
             {me ? (
               <>
                 {' '}
-                / user: <span className="font-semibold">{who(me.id)}</span>
+                / user:{' '}
+                <button
+                  className="font-semibold underline decoration-slate-500 hover:decoration-slate-200"
+                  onClick={() => setSelectedUserId(me.id)}
+                >
+                  {who(me.id)}
+                </button>
               </>
             ) : null}
           </p>
@@ -534,7 +551,8 @@ export default function PointEconomy({ economyId }: Props) {
                     <div>
                       <div className="text-sm">{a.description}</div>
                       <div className="text-xs text-slate-400">
-                        {new Date(a.created_at).toLocaleString('ja-JP')} / {who(a.created_by)} / {cLabel(a.currency_id)}
+                        {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> /{' '}
+                        {cLabel(a.currency_id)}
                       </div>
                     </div>
                     <div className="text-right">
@@ -690,7 +708,8 @@ export default function PointEconomy({ economyId }: Props) {
                       <div className="flex-1">
                         <div className="font-semibold">{a.description}</div>
                         <div className="text-sm text-slate-400 mt-1">
-                          {new Date(a.created_at).toLocaleString('ja-JP')} / {who(a.created_by)} / {cLabel(a.currency_id)}
+                          {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> /{' '}
+                          {cLabel(a.currency_id)}
                         </div>
                       </div>
                       <div className="text-right ml-4">
@@ -785,7 +804,8 @@ export default function PointEconomy({ economyId }: Props) {
                         {cById(r.from_currency_id)?.symbol ?? '???'} → {cById(r.to_currency_id)?.symbol ?? '???'}
                       </div>
                       <div className="text-xs text-slate-300 mt-1">
-                        amount_from: {Number(r.amount_from).toFixed(2)} / status: {r.status} / by: {who(r.created_by)}
+                        amount_from: {Number(r.amount_from).toFixed(2)} / status: {r.status} / by:{' '}
+                        <UserLink userId={r.created_by} />
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">{new Date(r.created_at).toLocaleString('ja-JP')}</div>
                     </button>
@@ -809,7 +829,8 @@ export default function PointEconomy({ economyId }: Props) {
                         amount_from: {Number(selectedRequest.amount_from).toFixed(2)} / status: {selectedRequest.status}
                       </div>
                       <div className="text-xs text-slate-400 mt-1">
-                        by {who(selectedRequest.created_by)} / {new Date(selectedRequest.created_at).toLocaleString('ja-JP')}
+                        by <UserLink userId={selectedRequest.created_by} /> /{' '}
+                        {new Date(selectedRequest.created_at).toLocaleString('ja-JP')}
                       </div>
                       {selectedRequest.status === 'finalized' && (
                         <div className="text-xs text-slate-200 mt-2">
@@ -853,7 +874,9 @@ export default function PointEconomy({ economyId }: Props) {
                       <div className="space-y-2">
                         {rateSubmissions.map((s) => (
                           <div key={s.id} className="flex items-center justify-between p-3 bg-slate-800/60 rounded">
-                            <div className="text-sm">{who(s.submitted_by)}</div>
+                            <div className="text-sm">
+                              <UserLink userId={s.submitted_by} />
+                            </div>
                             <div className="font-mono text-sm">{Number(s.rate).toFixed(6)}</div>
                           </div>
                         ))}
@@ -874,6 +897,16 @@ export default function PointEconomy({ economyId }: Props) {
         <footer className="mt-10 text-center text-xs text-slate-400">
           profiles が見えない場合：profiles テーブル作成 / RLS / schema cache 更新 / ensureProfileRow の alert を確認。
         </footer>
+
+        {/* ✅ これを追加：プロフィールモーダルを実際に表示する */}
+        <MemberProfileModal
+          open={!!selectedUserId}
+          onClose={() => setSelectedUserId('')}
+          economyId={economyId}
+          userId={selectedUserId}
+          profiles={profiles}
+          currencies={currencies}
+        />
       </div>
     </div>
   );
