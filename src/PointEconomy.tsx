@@ -29,7 +29,7 @@ type ExchangeRequest = {
   from_currency_id: string;
   to_currency_id: string;
   amount_from: number;
-  status: string; // enum exchange_status の値
+  status: string;
   created_at: string;
   created_by: string;
   finalized_at?: string | null;
@@ -57,40 +57,60 @@ type ActivityButton = {
   created_at: string;
 };
 
+type TransferRequest = {
+  id: string;
+  economy_id: string;
+  currency_id: string;
+  amount: number;
+  memo: string | null;
+  from_user: string;
+  to_user: string;
+  status: 'open' | 'accepted' | 'rejected' | 'cancelled';
+  created_at: string;
+  responded_at: string | null;
+};
+
+type DailySeriesRow = {
+  economy_id: string;
+  currency_id: string;
+  day: string; // date
+  delta: number;
+  total: number;
+  change_rate: number | null;
+};
+
 type Props = { economyId: string };
 
 export default function PointEconomy({ economyId }: Props) {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'currencies' | 'activities' | 'exchange'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'currencies' | 'activities' | 'exchange' | 'transfer' | 'charts'>(
+    'dashboard'
+  );
 
   const [me, setMe] = useState<{ id: string; email?: string } | null>(null);
 
-  // ✅ economy name
   const [economyName, setEconomyName] = useState<string>('');
 
-  // profiles: user_id -> display_name
   const [profiles, setProfiles] = useState<Record<string, string>>({});
   const [myDisplayName, setMyDisplayName] = useState('');
   const [selectedUserId, setSelectedUserId] = useState<string>('');
 
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
-  const [balances, setBalances] = useState<Record<string, number>>({}); // currency_id -> balance
+  const [balances, setBalances] = useState<Record<string, number>>({});
 
-  // Create forms
   const [newCurrency, setNewCurrency] = useState({ name: '', symbol: '', rules: '', color: '#3b82f6' });
   const [newActivity, setNewActivity] = useState({ currencyId: '', description: '', points: '' });
 
-  // ✅ rules editing
   const [editingCurrencyId, setEditingCurrencyId] = useState<string>('');
   const [editingRules, setEditingRules] = useState<string>('');
 
-  // ✅ Clicker buttons
+  // Clicker buttons
   const [buttons, setButtons] = useState<ActivityButton[]>([]);
   const [btnForm, setBtnForm] = useState({ currencyId: '', label: '', points: '', color: '#16a34a' });
   const [editingButtonId, setEditingButtonId] = useState<string>('');
   const [editingButton, setEditingButton] = useState({ currencyId: '', label: '', points: '', color: '#16a34a' });
 
-  // Exchange
+  // Exchange (self wallet convert)
   const [requests, setRequests] = useState<ExchangeRequest[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState<string>('');
   const selectedRequest = useMemo(
@@ -107,6 +127,17 @@ export default function PointEconomy({ economyId }: Props) {
 
   const [newRequest, setNewRequest] = useState({ fromId: '', toId: '', amount: '' });
   const [myRate, setMyRate] = useState('');
+
+  // Transfer (player-to-player)
+  const [transfers, setTransfers] = useState<TransferRequest[]>([]);
+  const [transferToUser, setTransferToUser] = useState<string>('');
+  const [transferCurrencyId, setTransferCurrencyId] = useState<string>('');
+  const [transferAmount, setTransferAmount] = useState<string>('');
+  const [transferMemo, setTransferMemo] = useState<string>('');
+
+  // Charts
+  const [chartCurrencyId, setChartCurrencyId] = useState<string>('');
+  const [seriesRows, setSeriesRows] = useState<DailySeriesRow[]>([]);
 
   // ---------------------------
   // Loaders / Ensurers
@@ -195,6 +226,7 @@ export default function PointEconomy({ economyId }: Props) {
 
     if (error) return alert(error.message);
     setCurrencies((data ?? []) as Currency[]);
+    if (!chartCurrencyId && (data ?? []).length > 0) setChartCurrencyId(String((data ?? [])[0].id));
   }
 
   async function loadActivities() {
@@ -289,6 +321,42 @@ export default function PointEconomy({ economyId }: Props) {
     setRateSubmissions(rows);
   }
 
+  async function loadTransfers() {
+    const { data, error } = await supabase
+      .from('transfer_requests')
+      .select('*')
+      .eq('economy_id', economyId)
+      .order('created_at', { ascending: false })
+      .limit(300);
+
+    if (error) return alert(error.message);
+
+    const rows = (data ?? []).map((t: any) => ({
+      ...t,
+      amount: Number(t.amount),
+    })) as TransferRequest[];
+    setTransfers(rows);
+  }
+
+  async function loadSeries() {
+    const { data, error } = await supabase
+      .from('currency_daily_series')
+      .select('economy_id,currency_id,day,delta,total,change_rate')
+      .eq('economy_id', economyId)
+      .order('day', { ascending: true });
+
+    if (error) return alert(error.message);
+
+    const rows = (data ?? []).map((r: any) => ({
+      ...r,
+      delta: Number(r.delta),
+      total: Number(r.total),
+      change_rate: r.change_rate == null ? null : Number(r.change_rate),
+    })) as DailySeriesRow[];
+
+    setSeriesRows(rows);
+  }
+
   // ---------------------------
   // Helpers
   // ---------------------------
@@ -314,9 +382,23 @@ export default function PointEconomy({ economyId }: Props) {
     );
   }
 
-  const totalValue = useMemo(() => {
-    return Object.values(balances).reduce((s, v) => s + Number(v), 0);
-  }, [balances]);
+  const totalValue = useMemo(() => Object.values(balances).reduce((s, v) => s + Number(v), 0), [balances]);
+
+  // Charts derived
+  const currencySeries = useMemo(() => {
+    if (!chartCurrencyId) return [];
+    return seriesRows.filter((r) => r.currency_id === chartCurrencyId);
+  }, [seriesRows, chartCurrencyId]);
+
+  const chartPointsTotal = useMemo(() => {
+    const pts = currencySeries.map((r) => ({ x: r.day, y: r.total }));
+    return pts;
+  }, [currencySeries]);
+
+  const chartPointsChange = useMemo(() => {
+    const pts = currencySeries.map((r) => ({ x: r.day, y: r.change_rate == null ? 0 : r.change_rate * 100 }));
+    return pts;
+  }, [currencySeries]);
 
   // ---------------------------
   // Mutations
@@ -333,7 +415,6 @@ export default function PointEconomy({ economyId }: Props) {
     });
 
     if (error) return alert(error.message);
-
     setNewCurrency({ name: '', symbol: '', rules: '', color: '#3b82f6' });
     await loadCurrencies();
   }
@@ -342,7 +423,6 @@ export default function PointEconomy({ economyId }: Props) {
     const currencyId = newActivity.currencyId;
     const description = newActivity.description.trim();
     const pts = Number(newActivity.points);
-
     if (!currencyId || !description || !Number.isFinite(pts)) return;
 
     const { data: s } = await supabase.auth.getSession();
@@ -360,15 +440,14 @@ export default function PointEconomy({ economyId }: Props) {
     if (error) return alert(error.message);
 
     setNewActivity({ currencyId: '', description: '', points: '' });
-    await Promise.all([loadActivities(), loadBalances()]);
+    await Promise.all([loadActivities(), loadBalances(), loadSeries()]);
   }
 
-  // ✅ Clicker: create button
+  // Clicker
   async function createButton() {
     const currencyId = btnForm.currencyId;
     const label = btnForm.label.trim();
     const pts = Number(btnForm.points);
-
     if (!currencyId || !label || !Number.isFinite(pts)) return alert('ボタンの入力が不正です');
 
     const { data: s } = await supabase.auth.getSession();
@@ -399,27 +478,19 @@ export default function PointEconomy({ economyId }: Props) {
       color: b.color || '#16a34a',
     });
   }
-
   function cancelEditButton() {
     setEditingButtonId('');
     setEditingButton({ currencyId: '', label: '', points: '', color: '#16a34a' });
   }
-
   async function saveButton(buttonId: string) {
     const label = editingButton.label.trim();
     const pts = Number(editingButton.points);
     const currencyId = editingButton.currencyId;
-
     if (!currencyId || !label || !Number.isFinite(pts)) return alert('編集内容が不正です');
 
     const { error } = await supabase
       .from('activity_buttons')
-      .update({
-        currency_id: currencyId,
-        label,
-        points: pts,
-        color: editingButton.color || '#16a34a',
-      })
+      .update({ currency_id: currencyId, label, points: pts, color: editingButton.color || '#16a34a' })
       .eq('id', buttonId)
       .eq('economy_id', economyId);
 
@@ -428,17 +499,12 @@ export default function PointEconomy({ economyId }: Props) {
     await loadButtons();
     cancelEditButton();
   }
-
   async function deleteButton(buttonId: string) {
     if (!confirm('このボタンを削除しますか？')) return;
-
     const { error } = await supabase.from('activity_buttons').delete().eq('id', buttonId).eq('economy_id', economyId);
     if (error) return alert(error.message);
-
     await loadButtons();
   }
-
-  // ✅ Clicker: press button -> add activity
   async function pressButton(b: ActivityButton) {
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
@@ -454,9 +520,10 @@ export default function PointEconomy({ economyId }: Props) {
 
     if (error) return alert(error.message);
 
-    await Promise.all([loadActivities(), loadBalances()]);
+    await Promise.all([loadActivities(), loadBalances(), loadSeries()]);
   }
 
+  // Exchange (self)
   async function createRequest() {
     const fromId = newRequest.fromId;
     const toId = newRequest.toId;
@@ -501,12 +568,7 @@ export default function PointEconomy({ economyId }: Props) {
     if (!uid) return alert('not authenticated');
 
     const { error } = await supabase.from('exchange_rate_submissions').upsert(
-      {
-        economy_id: selectedRequest.economy_id,
-        request_id: selectedRequest.id,
-        submitted_by: uid,
-        rate,
-      },
+      { economy_id: selectedRequest.economy_id, request_id: selectedRequest.id, submitted_by: uid, rate },
       { onConflict: 'request_id,submitted_by' }
     );
 
@@ -518,39 +580,70 @@ export default function PointEconomy({ economyId }: Props) {
 
   async function finalizeSelected() {
     if (!selectedRequest) return;
-
-    const { data, error } = await supabase.rpc('finalize_exchange_request', { p_request_id: selectedRequest.id });
+    const { error } = await supabase.rpc('finalize_exchange_request', { p_request_id: selectedRequest.id });
     if (error) return alert(error.message);
-
-    console.log('finalized exchange id:', data);
-    await Promise.all([loadRequests(), loadBalances()]);
+    await Promise.all([loadRequests(), loadBalances(), loadSeries()]);
   }
 
-  // ✅ currency rules editing
+  // Currency rules edit
   function startEditRules(c: Currency) {
     setEditingCurrencyId(c.id);
     setEditingRules(c.rules ?? '');
   }
-
   function cancelEditRules() {
     setEditingCurrencyId('');
     setEditingRules('');
   }
-
   async function saveRules(currencyId: string) {
     const next = editingRules.trim();
-
-    const { error } = await supabase
-      .from('currencies')
-      .update({ rules: next ? next : null })
-      .eq('id', currencyId)
-      .eq('economy_id', economyId);
-
+    const { error } = await supabase.from('currencies').update({ rules: next ? next : null }).eq('id', currencyId).eq('economy_id', economyId);
     if (error) return alert(error.message);
-
     await loadCurrencies();
     cancelEditRules();
     alert('ルールを保存しました');
+  }
+
+  // Transfer (player-to-player)
+  async function createTransfer() {
+    if (!transferToUser) return alert('相手（to_user）を選んでください');
+    if (!transferCurrencyId) return alert('通貨を選んでください');
+    const amt = Number(transferAmount);
+    if (!Number.isFinite(amt) || amt <= 0) return alert('amount を正しく入力してください');
+    if (me?.id && transferToUser === me.id) return alert('自分自身には送れません');
+    if (myBalance(transferCurrencyId) < amt) return alert('残高不足です');
+
+    const { data, error } = await supabase.rpc('create_transfer_request', {
+      p_economy_id: economyId,
+      p_currency_id: transferCurrencyId,
+      p_to_user: transferToUser,
+      p_amount: amt,
+      p_memo: transferMemo.trim() ? transferMemo.trim() : null,
+    });
+
+    if (error) return alert(error.message);
+
+    setTransferAmount('');
+    setTransferMemo('');
+    await loadTransfers();
+    alert(`送金リクエストを作成しました: ${String(data).slice(0, 8)}…`);
+  }
+
+  async function acceptTransfer(id: string) {
+    const { error } = await supabase.rpc('accept_transfer_request', { p_request_id: id });
+    if (error) return alert(error.message);
+    await Promise.all([loadTransfers(), loadBalances(), loadActivities(), loadSeries()]);
+  }
+
+  async function rejectTransfer(id: string) {
+    const { error } = await supabase.rpc('reject_transfer_request', { p_request_id: id });
+    if (error) return alert(error.message);
+    await loadTransfers();
+  }
+
+  async function cancelTransfer(id: string) {
+    const { error } = await supabase.rpc('cancel_transfer_request', { p_request_id: id });
+    if (error) return alert(error.message);
+    await loadTransfers();
   }
 
   // ---------------------------
@@ -571,8 +664,11 @@ export default function PointEconomy({ economyId }: Props) {
         loadBalances(),
         loadButtons(),
         loadRequests(),
+        loadTransfers(),
+        loadSeries(),
       ]);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [economyId]);
 
   useEffect(() => {
@@ -582,10 +678,73 @@ export default function PointEconomy({ economyId }: Props) {
       return;
     }
     loadRateSubmissions(selectedRequestId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRequestId]);
 
   // ---------------------------
-  // UI
+  // UI helpers
+  // ---------------------------
+  function Badge({ text }: { text: string }) {
+    return <span className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-xs text-slate-200">{text}</span>;
+  }
+
+  // SVG simple chart
+  function SimpleLineChart({
+    title,
+    points,
+    height = 180,
+    valueFormat,
+  }: {
+    title: string;
+    points: { x: string; y: number }[];
+    height?: number;
+    valueFormat: (v: number) => string;
+  }) {
+    const width = 900; // viewBox width
+    const pad = 24;
+
+    const ys = points.map((p) => p.y);
+    const minY = ys.length ? Math.min(...ys) : 0;
+    const maxY = ys.length ? Math.max(...ys) : 1;
+    const span = maxY - minY || 1;
+
+    const toX = (i: number) => {
+      if (points.length <= 1) return pad;
+      return pad + (i * (width - pad * 2)) / (points.length - 1);
+    };
+    const toY = (v: number) => {
+      const t = (v - minY) / span;
+      return pad + (1 - t) * (height - pad * 2);
+    };
+
+    const path = points
+      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(2)} ${toY(p.y).toFixed(2)}`)
+      .join(' ');
+
+    const last = points.length ? points[points.length - 1] : null;
+
+    return (
+      <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-bold">{title}</div>
+          {last ? <Badge text={`${last.x} / ${valueFormat(last.y)}`} /> : <Badge text="no data" />}
+        </div>
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]">
+          {/* axes */}
+          <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="rgba(148,163,184,.5)" strokeWidth="1" />
+          <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="rgba(148,163,184,.5)" strokeWidth="1" />
+          {/* line */}
+          <path d={path} fill="none" stroke="rgba(168,85,247,.9)" strokeWidth="2.2" />
+        </svg>
+        <div className="text-xs text-slate-400 mt-2">
+          min: {valueFormat(minY)} / max: {valueFormat(maxY)} / points: {points.length}
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------
+  // Render
   // ---------------------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
@@ -600,10 +759,7 @@ export default function PointEconomy({ economyId }: Props) {
               <>
                 {' '}
                 / user:{' '}
-                <button
-                  className="font-semibold underline decoration-slate-500 hover:decoration-slate-200"
-                  onClick={() => setSelectedUserId(me.id)}
-                >
+                <button className="font-semibold underline decoration-slate-500 hover:decoration-slate-200" onClick={() => setSelectedUserId(me.id)}>
                   {who(me.id)}
                 </button>
               </>
@@ -616,7 +772,9 @@ export default function PointEconomy({ economyId }: Props) {
             { id: 'dashboard', icon: BarChart3, label: 'ダッシュボード' },
             { id: 'currencies', icon: TrendingUp, label: 'ポイント銘柄' },
             { id: 'activities', icon: CheckCircle, label: '活動記録' },
-            { id: 'exchange', icon: ArrowRightLeft, label: '交換' },
+            { id: 'exchange', icon: ArrowRightLeft, label: '交換（自分）' },
+            { id: 'transfer', icon: ArrowRightLeft, label: 'やり取り（送金）' },
+            { id: 'charts', icon: BarChart3, label: 'Charts' },
           ].map((tab: any) => (
             <button
               key={tab.id}
@@ -649,7 +807,6 @@ export default function PointEconomy({ economyId }: Props) {
               </div>
             </div>
 
-            {/* Profile card */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <h2 className="text-xl font-bold mb-3">プロフィール</h2>
               <div className="text-sm text-slate-300 mb-2">
@@ -666,10 +823,9 @@ export default function PointEconomy({ economyId }: Props) {
                   保存
                 </button>
               </div>
-              <div className="text-xs text-slate-400 mt-2">※表示名は activities / exchange の「by:」表示に反映されます</div>
+              <div className="text-xs text-slate-400 mt-2">※表示名は activities / exchange / transfer の「by:」表示に反映されます</div>
             </div>
 
-            {/* Balances */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <h2 className="text-xl font-bold flex items-center gap-2">
@@ -697,27 +853,6 @@ export default function PointEconomy({ economyId }: Props) {
                 {currencies.length === 0 && <p className="text-slate-400 text-center py-8">まだ銘柄がありません</p>}
               </div>
             </div>
-
-            {/* Recent activities */}
-            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
-              <h2 className="text-xl font-bold mb-4">最近の活動（全体）</h2>
-              <div className="space-y-2">
-                {activities.slice(0, 5).map((a) => (
-                  <div key={a.id} className="flex justify-between items-center p-3 bg-slate-700/30 rounded">
-                    <div>
-                      <div className="text-sm">{a.description}</div>
-                      <div className="text-xs text-slate-400">
-                        {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> / {cLabel(a.currency_id)}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-green-400 font-bold">+{Number(a.points).toFixed(2)}</div>
-                    </div>
-                  </div>
-                ))}
-                {activities.length === 0 && <p className="text-slate-400 text-center py-8">まだ活動記録がありません</p>}
-              </div>
-            </div>
           </div>
         )}
 
@@ -733,20 +868,20 @@ export default function PointEconomy({ economyId }: Props) {
               <div className="space-y-4">
                 <input
                   type="text"
-                  placeholder="銘柄名（例：哲学書ポイント）"
+                  placeholder="銘柄名"
                   value={newCurrency.name}
                   onChange={(e) => setNewCurrency({ ...newCurrency, name: e.target.value })}
                   className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
                 />
                 <input
                   type="text"
-                  placeholder="シンボル（例：PHIL）"
+                  placeholder="シンボル"
                   value={newCurrency.symbol}
                   onChange={(e) => setNewCurrency({ ...newCurrency, symbol: e.target.value })}
                   className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
                 />
                 <textarea
-                  placeholder="獲得ルール（例：30分読書で10pt）"
+                  placeholder="獲得ルール"
                   value={newCurrency.rules}
                   onChange={(e) => setNewCurrency({ ...newCurrency, rules: e.target.value })}
                   className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none h-24"
@@ -788,10 +923,7 @@ export default function PointEconomy({ economyId }: Props) {
                         </div>
 
                         {!isEditing ? (
-                          <button
-                            onClick={() => startEditRules(currency)}
-                            className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
-                          >
+                          <button onClick={() => startEditRules(currency)} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
                             ルール編集
                           </button>
                         ) : (
@@ -802,10 +934,7 @@ export default function PointEconomy({ economyId }: Props) {
                             >
                               保存
                             </button>
-                            <button
-                              onClick={cancelEditRules}
-                              className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
-                            >
+                            <button onClick={cancelEditRules} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
                               キャンセル
                             </button>
                           </div>
@@ -816,11 +945,7 @@ export default function PointEconomy({ economyId }: Props) {
                         {!isEditing ? (
                           <div className="text-sm text-slate-300 p-3 bg-slate-800/50 rounded">
                             <div className="font-semibold text-slate-400 mb-1">獲得ルール:</div>
-                            {currency.rules ? (
-                              <div className="whitespace-pre-wrap">{currency.rules}</div>
-                            ) : (
-                              <div className="text-slate-500">（未設定）</div>
-                            )}
+                            {currency.rules ? <div className="whitespace-pre-wrap">{currency.rules}</div> : <div className="text-slate-500">（未設定）</div>}
                           </div>
                         ) : (
                           <div className="text-sm text-slate-300 p-3 bg-slate-800/50 rounded">
@@ -829,7 +954,7 @@ export default function PointEconomy({ economyId }: Props) {
                               className="w-full p-3 bg-slate-900 rounded border border-slate-700 focus:border-purple-500 outline-none h-28"
                               value={editingRules}
                               onChange={(e) => setEditingRules(e.target.value)}
-                              placeholder="例：30分読書で10pt、1章読了で50pt"
+                              placeholder="例：30分読書で10pt"
                             />
                             <div className="text-xs text-slate-500 mt-2">空にして保存すると「未設定（null）」になります。</div>
                           </div>
@@ -845,10 +970,9 @@ export default function PointEconomy({ economyId }: Props) {
           </div>
         )}
 
-        {/* Activities */}
+        {/* Activities (clicker + manual + history) */}
         {activeTab === 'activities' && (
           <div className="space-y-6">
-            {/* ✅ ClickPad */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <h2 className="text-xl font-bold">ClickPad（押すだけで加算）</h2>
@@ -860,13 +984,11 @@ export default function PointEconomy({ economyId }: Props) {
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                 {buttons.map((b) => (
                   <div key={b.id} className="bg-slate-900/40 border border-slate-700 rounded-lg p-3">
-                    <button
-                      onClick={() => pressButton(b)}
-                      className="w-full p-3 rounded font-semibold"
-                      style={{ backgroundColor: b.color || '#16a34a' }}
-                    >
+                    <button onClick={() => pressButton(b)} className="w-full p-3 rounded font-semibold" style={{ backgroundColor: b.color || '#16a34a' }}>
                       {b.label}
-                      <div className="text-xs opacity-90 mt-1">+{Number(b.points).toFixed(2)} / {cById(b.currency_id)?.symbol ?? '—'}</div>
+                      <div className="text-xs opacity-90 mt-1">
+                        +{Number(b.points).toFixed(2)} / {cById(b.currency_id)?.symbol ?? '—'}
+                      </div>
                     </button>
 
                     <div className="mt-2 flex items-center justify-between text-xs text-slate-300">
@@ -874,19 +996,12 @@ export default function PointEconomy({ economyId }: Props) {
                       <div className="text-slate-400">by {who(b.created_by)}</div>
                     </div>
 
-                    {/* 作成者だけ編集/削除（UI側。RLSでも守る） */}
                     {me?.id === b.created_by && (
                       <div className="mt-2 flex gap-2">
-                        <button
-                          onClick={() => startEditButton(b)}
-                          className="flex-1 px-2 py-2 rounded bg-slate-800 hover:bg-slate-700 text-xs"
-                        >
+                        <button onClick={() => startEditButton(b)} className="flex-1 px-2 py-2 rounded bg-slate-800 hover:bg-slate-700 text-xs">
                           編集
                         </button>
-                        <button
-                          onClick={() => deleteButton(b.id)}
-                          className="flex-1 px-2 py-2 rounded bg-red-700/70 hover:bg-red-700 text-xs"
-                        >
+                        <button onClick={() => deleteButton(b.id)} className="flex-1 px-2 py-2 rounded bg-red-700/70 hover:bg-red-700 text-xs">
                           削除
                         </button>
                       </div>
@@ -896,7 +1011,6 @@ export default function PointEconomy({ economyId }: Props) {
                 {buttons.length === 0 && <div className="text-slate-400">まだボタンがありません</div>}
               </div>
 
-              {/* create / edit forms */}
               <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="bg-slate-900/40 border border-slate-700 rounded-lg p-4">
                   <div className="font-semibold mb-3">新規ボタン作成</div>
@@ -932,12 +1046,7 @@ export default function PointEconomy({ economyId }: Props) {
 
                     <div className="flex items-center gap-3">
                       <label className="text-slate-300 text-sm">色:</label>
-                      <input
-                        type="color"
-                        value={btnForm.color}
-                        onChange={(e) => setBtnForm({ ...btnForm, color: e.target.value })}
-                        className="w-16 h-10 rounded cursor-pointer"
-                      />
+                      <input type="color" value={btnForm.color} onChange={(e) => setBtnForm({ ...btnForm, color: e.target.value })} className="w-16 h-10 rounded cursor-pointer" />
                     </div>
 
                     <button onClick={createButton} className="w-full bg-green-600 hover:bg-green-700 p-3 rounded font-semibold">
@@ -964,37 +1073,17 @@ export default function PointEconomy({ economyId }: Props) {
                         ))}
                       </select>
 
-                      <input
-                        className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
-                        placeholder="ラベル"
-                        value={editingButton.label}
-                        onChange={(e) => setEditingButton({ ...editingButton, label: e.target.value })}
-                      />
+                      <input className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none" placeholder="ラベル" value={editingButton.label} onChange={(e) => setEditingButton({ ...editingButton, label: e.target.value })} />
 
-                      <input
-                        className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
-                        type="number"
-                        step="0.01"
-                        placeholder="加算ポイント"
-                        value={editingButton.points}
-                        onChange={(e) => setEditingButton({ ...editingButton, points: e.target.value })}
-                      />
+                      <input className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none" type="number" step="0.01" placeholder="加算ポイント" value={editingButton.points} onChange={(e) => setEditingButton({ ...editingButton, points: e.target.value })} />
 
                       <div className="flex items-center gap-3">
                         <label className="text-slate-300 text-sm">色:</label>
-                        <input
-                          type="color"
-                          value={editingButton.color}
-                          onChange={(e) => setEditingButton({ ...editingButton, color: e.target.value })}
-                          className="w-16 h-10 rounded cursor-pointer"
-                        />
+                        <input type="color" value={editingButton.color} onChange={(e) => setEditingButton({ ...editingButton, color: e.target.value })} className="w-16 h-10 rounded cursor-pointer" />
                       </div>
 
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => saveButton(editingButtonId)}
-                          className="flex-1 bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold"
-                        >
+                        <button onClick={() => saveButton(editingButtonId)} className="flex-1 bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold">
                           保存
                         </button>
                         <button onClick={cancelEditButton} className="flex-1 bg-slate-800 hover:bg-slate-700 p-3 rounded font-semibold">
@@ -1007,13 +1096,8 @@ export default function PointEconomy({ economyId }: Props) {
                   )}
                 </div>
               </div>
-
-              <div className="mt-4 text-xs text-slate-400">
-                仕様：ボタンを押すと activities に「description=ラベル / points=定義値」で記録されます。
-              </div>
             </div>
 
-            {/* manual activity (残しておく) */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
                 <CheckCircle size={24} />
@@ -1034,22 +1118,9 @@ export default function PointEconomy({ economyId }: Props) {
                   ))}
                 </select>
 
-                <input
-                  type="text"
-                  placeholder="活動内容（例：英語30分）"
-                  value={newActivity.description}
-                  onChange={(e) => setNewActivity({ ...newActivity, description: e.target.value })}
-                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
-                />
+                <input type="text" placeholder="活動内容" value={newActivity.description} onChange={(e) => setNewActivity({ ...newActivity, description: e.target.value })} className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none" />
 
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="獲得ポイント"
-                  value={newActivity.points}
-                  onChange={(e) => setNewActivity({ ...newActivity, points: e.target.value })}
-                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
-                />
+                <input type="number" step="0.01" placeholder="獲得ポイント" value={newActivity.points} onChange={(e) => setNewActivity({ ...newActivity, points: e.target.value })} className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none" />
 
                 <button onClick={addActivity} className="w-full bg-green-600 hover:bg-green-700 p-3 rounded font-semibold transition">
                   記録する
@@ -1057,13 +1128,12 @@ export default function PointEconomy({ economyId }: Props) {
               </div>
             </div>
 
-            {/* history */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-bold">活動履歴（全体）</h2>
                 <button
                   onClick={async () => {
-                    await Promise.all([loadActivities(), loadBalances(), loadProfiles(), loadButtons()]);
+                    await Promise.all([loadActivities(), loadBalances(), loadProfiles(), loadButtons(), loadSeries()]);
                   }}
                   className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
                 >
@@ -1093,7 +1163,7 @@ export default function PointEconomy({ economyId }: Props) {
           </div>
         )}
 
-        {/* Exchange（あなたのまま） */}
+        {/* Exchange (self convert) */}
         {activeTab === 'exchange' && (
           <div className="space-y-6">
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
@@ -1103,11 +1173,7 @@ export default function PointEconomy({ economyId }: Props) {
               </h2>
 
               <div className="space-y-4">
-                <select
-                  value={newRequest.fromId}
-                  onChange={(e) => setNewRequest({ ...newRequest, fromId: e.target.value })}
-                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
-                >
+                <select value={newRequest.fromId} onChange={(e) => setNewRequest({ ...newRequest, fromId: e.target.value })} className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none">
                   <option value="">交換元ポイント</option>
                   {currencies.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -1116,11 +1182,7 @@ export default function PointEconomy({ economyId }: Props) {
                   ))}
                 </select>
 
-                <select
-                  value={newRequest.toId}
-                  onChange={(e) => setNewRequest({ ...newRequest, toId: e.target.value })}
-                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
-                >
+                <select value={newRequest.toId} onChange={(e) => setNewRequest({ ...newRequest, toId: e.target.value })} className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none">
                   <option value="">交換先ポイント</option>
                   {currencies.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -1129,14 +1191,7 @@ export default function PointEconomy({ economyId }: Props) {
                   ))}
                 </select>
 
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="交換量（from）"
-                  value={newRequest.amount}
-                  onChange={(e) => setNewRequest({ ...newRequest, amount: e.target.value })}
-                  className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
-                />
+                <input type="number" step="0.01" placeholder="交換量（from）" value={newRequest.amount} onChange={(e) => setNewRequest({ ...newRequest, amount: e.target.value })} className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none" />
 
                 <button onClick={createRequest} className="w-full bg-blue-600 hover:bg-blue-700 p-3 rounded font-semibold">
                   Request作成
@@ -1148,12 +1203,7 @@ export default function PointEconomy({ economyId }: Props) {
               <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-xl font-bold">RequestList</h2>
-                  <button
-                    onClick={async () => {
-                      await Promise.all([loadRequests(), loadProfiles()]);
-                    }}
-                    className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
-                  >
+                  <button onClick={loadRequests} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
                     再読み込み
                   </button>
                 </div>
@@ -1164,9 +1214,7 @@ export default function PointEconomy({ economyId }: Props) {
                       key={r.id}
                       onClick={() => setSelectedRequestId(r.id)}
                       className={`w-full text-left p-3 rounded border transition ${
-                        selectedRequestId === r.id
-                          ? 'bg-purple-700/40 border-purple-500'
-                          : 'bg-slate-700/30 border-slate-700 hover:bg-slate-700/50'
+                        selectedRequestId === r.id ? 'bg-purple-700/40 border-purple-500' : 'bg-slate-700/30 border-slate-700 hover:bg-slate-700/50'
                       }`}
                     >
                       <div className="text-sm font-semibold">
@@ -1209,14 +1257,7 @@ export default function PointEconomy({ economyId }: Props) {
                     <div className="p-4 bg-slate-700/30 rounded">
                       <div className="font-semibold mb-2">SubmitRate</div>
 
-                      <input
-                        type="number"
-                        step="0.000001"
-                        placeholder="rate（例：2.0）"
-                        value={myRate}
-                        onChange={(e) => setMyRate(e.target.value)}
-                        className="w-full p-3 bg-slate-800 rounded border border-slate-600 focus:border-purple-500 outline-none"
-                      />
+                      <input type="number" step="0.000001" placeholder="rate（例：2.0）" value={myRate} onChange={(e) => setMyRate(e.target.value)} className="w-full p-3 bg-slate-800 rounded border border-slate-600 focus:border-purple-500 outline-none" />
 
                       <button onClick={submitRate} className="w-full mt-3 bg-green-600 hover:bg-green-700 p-3 rounded font-semibold">
                         レート提出
@@ -1228,9 +1269,7 @@ export default function PointEconomy({ economyId }: Props) {
                     </div>
 
                     <div className="p-4 bg-slate-700/20 rounded">
-                      <div className="font-semibold mb-2">
-                        提出済みレート{avgRate != null ? `（平均: ${avgRate.toFixed(6)}）` : ''}
-                      </div>
+                      <div className="font-semibold mb-2">提出済みレート{avgRate != null ? `（平均: ${avgRate.toFixed(6)}）` : ''}</div>
 
                       <div className="space-y-2">
                         {rateSubmissions.map((s) => (
@@ -1253,11 +1292,178 @@ export default function PointEconomy({ economyId }: Props) {
           </div>
         )}
 
-        <footer className="mt-10 text-center text-xs text-slate-400">
-          クリッカー：activity_buttons を作成して、ClickPad のボタンを押すだけで activities に記録されます。
-        </footer>
+        {/* Transfer (player-to-player) */}
+        {activeTab === 'transfer' && (
+          <div className="space-y-6">
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold">送金リクエスト（プレイヤー間）</h2>
+                <button onClick={loadTransfers} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+                  再読み込み
+                </button>
+              </div>
 
-        {/* ✅ プロフィールモーダル（あなたのまま） */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-slate-900/40 border border-slate-700 rounded-lg p-4">
+                  <div className="font-semibold mb-3">送金リクエストを作る</div>
+
+                  <div className="space-y-3">
+                    <div className="text-xs text-slate-400">
+                      相手は profiles から選びます（同一 economy 内のメンバー）。「自分以外」を選択してください。
+                    </div>
+
+                    <select value={transferToUser} onChange={(e) => setTransferToUser(e.target.value)} className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none">
+                      <option value="">送金先（to_user）</option>
+                      {Object.keys(profiles)
+                        .filter((uid) => uid !== me?.id)
+                        .map((uid) => (
+                          <option key={uid} value={uid}>
+                            {profiles[uid]} ({uid.slice(0, 6)})
+                          </option>
+                        ))}
+                    </select>
+
+                    <select value={transferCurrencyId} onChange={(e) => setTransferCurrencyId(e.target.value)} className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none">
+                      <option value="">通貨</option>
+                      {currencies.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.symbol}) / 自分残高: {myBalance(c.id).toFixed(2)}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input type="number" step="0.01" placeholder="amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)} className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none" />
+
+                    <input placeholder="メモ（任意）" value={transferMemo} onChange={(e) => setTransferMemo(e.target.value)} className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none" />
+
+                    <button onClick={createTransfer} className="w-full bg-blue-600 hover:bg-blue-700 p-3 rounded font-semibold">
+                      送金Request作成
+                    </button>
+
+                    <div className="text-xs text-slate-400">
+                      受け手が Accept すると、activities に「送信者 -amount / 受信者 +amount」が記録され、残高が動きます。
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/40 border border-slate-700 rounded-lg p-4">
+                  <div className="font-semibold mb-3">受信中（あなた宛て / open）</div>
+
+                  <div className="space-y-2">
+                    {transfers
+                      .filter((t) => t.to_user === me?.id && t.status === 'open')
+                      .map((t) => (
+                        <div key={t.id} className="p-3 rounded bg-slate-800/70 border border-slate-700">
+                          <div className="text-sm font-semibold">
+                            {cById(t.currency_id)?.symbol ?? '???'} +{Number(t.amount).toFixed(2)}
+                          </div>
+                          <div className="text-xs text-slate-300 mt-1">
+                            from: <UserLink userId={t.from_user} /> / memo: {t.memo ?? '—'}
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-1">{new Date(t.created_at).toLocaleString('ja-JP')}</div>
+                          <div className="mt-2 flex gap-2">
+                            <button onClick={() => acceptTransfer(t.id)} className="flex-1 bg-green-600 hover:bg-green-700 px-3 py-2 rounded text-sm font-semibold">
+                              Accept
+                            </button>
+                            <button onClick={() => rejectTransfer(t.id)} className="flex-1 bg-red-700/70 hover:bg-red-700 px-3 py-2 rounded text-sm font-semibold">
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    {transfers.filter((t) => t.to_user === me?.id && t.status === 'open').length === 0 && <div className="text-slate-400 text-sm">受信中のリクエストはありません</div>}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold">送金履歴（全体）</h2>
+                <button
+                  onClick={async () => {
+                    await Promise.all([loadTransfers(), loadBalances(), loadActivities(), loadSeries()]);
+                  }}
+                  className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
+                >
+                  再読み込み
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {transfers.map((t) => (
+                  <div key={t.id} className="p-3 rounded bg-slate-700/30 border border-slate-700">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">
+                        {cById(t.currency_id)?.symbol ?? '???'} {Number(t.amount).toFixed(2)} <span className="text-slate-400">({t.status})</span>
+                      </div>
+                      <div className="text-xs text-slate-400">{new Date(t.created_at).toLocaleString('ja-JP')}</div>
+                    </div>
+                    <div className="text-xs text-slate-300 mt-1">
+                      from <UserLink userId={t.from_user} /> → to <UserLink userId={t.to_user} /> / memo: {t.memo ?? '—'}
+                    </div>
+
+                    {t.status === 'open' && t.from_user === me?.id && (
+                      <div className="mt-2">
+                        <button onClick={() => cancelTransfer(t.id)} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
+                          Cancel（送信者）
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {transfers.length === 0 && <div className="text-slate-400 text-sm">まだ送金履歴がありません</div>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Charts */}
+        {activeTab === 'charts' && (
+          <div className="space-y-6">
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <h2 className="text-xl font-bold">通貨の「総資産」推移（活動ベース）</h2>
+                <div className="flex gap-2">
+                  <button onClick={loadSeries} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+                    データ再読み込み
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+                <div className="lg:col-span-2">
+                  <select value={chartCurrencyId} onChange={(e) => setChartCurrencyId(e.target.value)} className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none">
+                    <option value="">通貨を選択</option>
+                    {currencies.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.symbol})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="text-xs text-slate-400 flex items-center">
+                  total = activitiesの累積（全員ぶん） / change% = 前日比（%）
+                </div>
+              </div>
+
+              {chartCurrencyId ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <SimpleLineChart title="Total（総量）" points={chartPointsTotal} valueFormat={(v) => v.toFixed(2)} />
+                  <SimpleLineChart title="Change %（前日比）" points={chartPointsChange} valueFormat={(v) => `${v.toFixed(2)}%`} />
+                </div>
+              ) : (
+                <div className="text-slate-400">通貨を選択してください</div>
+              )}
+
+              <div className="mt-4 text-xs text-slate-400">
+                ※ここはまず「株価っぽく見える」最短実装です。交換（exchanges）まで総量推移に混ぜたい場合は、あなたの exchanges テーブルの列名を合わせて view を拡張します。
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Profile modal */}
         <MemberProfileModal
           open={!!selectedUserId}
           onClose={() => setSelectedUserId('')}
