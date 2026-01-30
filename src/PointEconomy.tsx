@@ -46,6 +46,17 @@ type RateSubmission = {
   created_at: string;
 };
 
+type ActivityButton = {
+  id: string;
+  economy_id: string;
+  currency_id: string;
+  label: string;
+  points: number;
+  color: string;
+  created_by: string;
+  created_at: string;
+};
+
 type Props = { economyId: string };
 
 export default function PointEconomy({ economyId }: Props) {
@@ -72,6 +83,12 @@ export default function PointEconomy({ economyId }: Props) {
   // ✅ rules editing
   const [editingCurrencyId, setEditingCurrencyId] = useState<string>('');
   const [editingRules, setEditingRules] = useState<string>('');
+
+  // ✅ Clicker buttons
+  const [buttons, setButtons] = useState<ActivityButton[]>([]);
+  const [btnForm, setBtnForm] = useState({ currencyId: '', label: '', points: '', color: '#16a34a' });
+  const [editingButtonId, setEditingButtonId] = useState<string>('');
+  const [editingButton, setEditingButton] = useState({ currencyId: '', label: '', points: '', color: '#16a34a' });
 
   // Exchange
   const [requests, setRequests] = useState<ExchangeRequest[]>([]);
@@ -108,7 +125,6 @@ export default function PointEconomy({ economyId }: Props) {
   }
 
   async function ensureProfileRow() {
-    // profiles が無ければ作る（RLSで insert_self を許可している前提）
     const { data: s, error: e0 } = await supabase.auth.getSession();
     if (e0) return alert(e0.message);
     const user = s.session?.user;
@@ -199,7 +215,6 @@ export default function PointEconomy({ economyId }: Props) {
   }
 
   async function loadBalances() {
-    // view currency_balances_by_user（ユーザー別財布）
     const { data: s, error: e0 } = await supabase.auth.getSession();
     if (e0) return alert(e0.message);
     const uid = s.session?.user?.id;
@@ -218,6 +233,23 @@ export default function PointEconomy({ economyId }: Props) {
       map[r.currency_id] = Number(r.balance);
     });
     setBalances(map);
+  }
+
+  async function loadButtons() {
+    const { data, error } = await supabase
+      .from('activity_buttons')
+      .select('*')
+      .eq('economy_id', economyId)
+      .order('created_at', { ascending: true });
+
+    if (error) return alert(error.message);
+
+    const rows = (data ?? []).map((b: any) => ({
+      ...b,
+      points: Number(b.points),
+    })) as ActivityButton[];
+
+    setButtons(rows);
   }
 
   async function loadRequests() {
@@ -283,7 +315,6 @@ export default function PointEconomy({ economyId }: Props) {
   }
 
   const totalValue = useMemo(() => {
-    // 通貨が混在するが、指標として財布合計を出す
     return Object.values(balances).reduce((s, v) => s + Number(v), 0);
   }, [balances]);
 
@@ -329,6 +360,100 @@ export default function PointEconomy({ economyId }: Props) {
     if (error) return alert(error.message);
 
     setNewActivity({ currencyId: '', description: '', points: '' });
+    await Promise.all([loadActivities(), loadBalances()]);
+  }
+
+  // ✅ Clicker: create button
+  async function createButton() {
+    const currencyId = btnForm.currencyId;
+    const label = btnForm.label.trim();
+    const pts = Number(btnForm.points);
+
+    if (!currencyId || !label || !Number.isFinite(pts)) return alert('ボタンの入力が不正です');
+
+    const { data: s } = await supabase.auth.getSession();
+    const uid = s.session?.user?.id;
+    if (!uid) return alert('not authenticated');
+
+    const { error } = await supabase.from('activity_buttons').insert({
+      economy_id: economyId,
+      currency_id: currencyId,
+      label,
+      points: pts,
+      color: btnForm.color || '#16a34a',
+      created_by: uid,
+    });
+
+    if (error) return alert(error.message);
+
+    setBtnForm({ currencyId: '', label: '', points: '', color: '#16a34a' });
+    await loadButtons();
+  }
+
+  function startEditButton(b: ActivityButton) {
+    setEditingButtonId(b.id);
+    setEditingButton({
+      currencyId: b.currency_id,
+      label: b.label,
+      points: String(b.points),
+      color: b.color || '#16a34a',
+    });
+  }
+
+  function cancelEditButton() {
+    setEditingButtonId('');
+    setEditingButton({ currencyId: '', label: '', points: '', color: '#16a34a' });
+  }
+
+  async function saveButton(buttonId: string) {
+    const label = editingButton.label.trim();
+    const pts = Number(editingButton.points);
+    const currencyId = editingButton.currencyId;
+
+    if (!currencyId || !label || !Number.isFinite(pts)) return alert('編集内容が不正です');
+
+    const { error } = await supabase
+      .from('activity_buttons')
+      .update({
+        currency_id: currencyId,
+        label,
+        points: pts,
+        color: editingButton.color || '#16a34a',
+      })
+      .eq('id', buttonId)
+      .eq('economy_id', economyId);
+
+    if (error) return alert(error.message);
+
+    await loadButtons();
+    cancelEditButton();
+  }
+
+  async function deleteButton(buttonId: string) {
+    if (!confirm('このボタンを削除しますか？')) return;
+
+    const { error } = await supabase.from('activity_buttons').delete().eq('id', buttonId).eq('economy_id', economyId);
+    if (error) return alert(error.message);
+
+    await loadButtons();
+  }
+
+  // ✅ Clicker: press button -> add activity
+  async function pressButton(b: ActivityButton) {
+    const { data: s } = await supabase.auth.getSession();
+    const uid = s.session?.user?.id;
+    if (!uid) return alert('not authenticated');
+
+    const { error } = await supabase.from('activities').insert({
+      economy_id: economyId,
+      currency_id: b.currency_id,
+      description: b.label,
+      points: Number(b.points),
+      created_by: uid,
+    });
+
+    if (error) return alert(error.message);
+
     await Promise.all([loadActivities(), loadBalances()]);
   }
 
@@ -444,10 +569,10 @@ export default function PointEconomy({ economyId }: Props) {
         loadCurrencies(),
         loadActivities(),
         loadBalances(),
+        loadButtons(),
         loadRequests(),
       ]);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [economyId]);
 
   useEffect(() => {
@@ -457,7 +582,6 @@ export default function PointEconomy({ economyId }: Props) {
       return;
     }
     loadRateSubmissions(selectedRequestId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRequestId]);
 
   // ---------------------------
@@ -724,10 +848,176 @@ export default function PointEconomy({ economyId }: Props) {
         {/* Activities */}
         {activeTab === 'activities' && (
           <div className="space-y-6">
+            {/* ✅ ClickPad */}
+            <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between gap-2 mb-4">
+                <h2 className="text-xl font-bold">ClickPad（押すだけで加算）</h2>
+                <button onClick={loadButtons} className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+                  ボタン再読み込み
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {buttons.map((b) => (
+                  <div key={b.id} className="bg-slate-900/40 border border-slate-700 rounded-lg p-3">
+                    <button
+                      onClick={() => pressButton(b)}
+                      className="w-full p-3 rounded font-semibold"
+                      style={{ backgroundColor: b.color || '#16a34a' }}
+                    >
+                      {b.label}
+                      <div className="text-xs opacity-90 mt-1">+{Number(b.points).toFixed(2)} / {cById(b.currency_id)?.symbol ?? '—'}</div>
+                    </button>
+
+                    <div className="mt-2 flex items-center justify-between text-xs text-slate-300">
+                      <div>{cById(b.currency_id)?.symbol ?? '—'}</div>
+                      <div className="text-slate-400">by {who(b.created_by)}</div>
+                    </div>
+
+                    {/* 作成者だけ編集/削除（UI側。RLSでも守る） */}
+                    {me?.id === b.created_by && (
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          onClick={() => startEditButton(b)}
+                          className="flex-1 px-2 py-2 rounded bg-slate-800 hover:bg-slate-700 text-xs"
+                        >
+                          編集
+                        </button>
+                        <button
+                          onClick={() => deleteButton(b.id)}
+                          className="flex-1 px-2 py-2 rounded bg-red-700/70 hover:bg-red-700 text-xs"
+                        >
+                          削除
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {buttons.length === 0 && <div className="text-slate-400">まだボタンがありません</div>}
+              </div>
+
+              {/* create / edit forms */}
+              <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-slate-900/40 border border-slate-700 rounded-lg p-4">
+                  <div className="font-semibold mb-3">新規ボタン作成</div>
+                  <div className="space-y-3">
+                    <select
+                      value={btnForm.currencyId}
+                      onChange={(e) => setBtnForm({ ...btnForm, currencyId: e.target.value })}
+                      className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
+                    >
+                      <option value="">通貨を選択</option>
+                      {currencies.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.symbol})
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
+                      placeholder="ラベル（例：英語10分）"
+                      value={btnForm.label}
+                      onChange={(e) => setBtnForm({ ...btnForm, label: e.target.value })}
+                    />
+
+                    <input
+                      className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
+                      type="number"
+                      step="0.01"
+                      placeholder="加算ポイント（例：5）"
+                      value={btnForm.points}
+                      onChange={(e) => setBtnForm({ ...btnForm, points: e.target.value })}
+                    />
+
+                    <div className="flex items-center gap-3">
+                      <label className="text-slate-300 text-sm">色:</label>
+                      <input
+                        type="color"
+                        value={btnForm.color}
+                        onChange={(e) => setBtnForm({ ...btnForm, color: e.target.value })}
+                        className="w-16 h-10 rounded cursor-pointer"
+                      />
+                    </div>
+
+                    <button onClick={createButton} className="w-full bg-green-600 hover:bg-green-700 p-3 rounded font-semibold">
+                      ボタン作成
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/40 border border-slate-700 rounded-lg p-4">
+                  <div className="font-semibold mb-3">ボタン編集</div>
+
+                  {editingButtonId ? (
+                    <div className="space-y-3">
+                      <select
+                        value={editingButton.currencyId}
+                        onChange={(e) => setEditingButton({ ...editingButton, currencyId: e.target.value })}
+                        className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
+                      >
+                        <option value="">通貨を選択</option>
+                        {currencies.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.symbol})
+                          </option>
+                        ))}
+                      </select>
+
+                      <input
+                        className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
+                        placeholder="ラベル"
+                        value={editingButton.label}
+                        onChange={(e) => setEditingButton({ ...editingButton, label: e.target.value })}
+                      />
+
+                      <input
+                        className="w-full p-3 bg-slate-800 rounded border border-slate-700 focus:border-purple-500 outline-none"
+                        type="number"
+                        step="0.01"
+                        placeholder="加算ポイント"
+                        value={editingButton.points}
+                        onChange={(e) => setEditingButton({ ...editingButton, points: e.target.value })}
+                      />
+
+                      <div className="flex items-center gap-3">
+                        <label className="text-slate-300 text-sm">色:</label>
+                        <input
+                          type="color"
+                          value={editingButton.color}
+                          onChange={(e) => setEditingButton({ ...editingButton, color: e.target.value })}
+                          className="w-16 h-10 rounded cursor-pointer"
+                        />
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => saveButton(editingButtonId)}
+                          className="flex-1 bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold"
+                        >
+                          保存
+                        </button>
+                        <button onClick={cancelEditButton} className="flex-1 bg-slate-800 hover:bg-slate-700 p-3 rounded font-semibold">
+                          キャンセル
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-slate-400 text-sm">編集したいボタンの「編集」を押してください（作成者のみ）。</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 text-xs text-slate-400">
+                仕様：ボタンを押すと activities に「description=ラベル / points=定義値」で記録されます。
+              </div>
+            </div>
+
+            {/* manual activity (残しておく) */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
                 <CheckCircle size={24} />
-                活動を記録してポイント獲得（自分財布）
+                活動を手入力（保険）
               </h2>
 
               <div className="space-y-4">
@@ -761,18 +1051,19 @@ export default function PointEconomy({ economyId }: Props) {
                   className="w-full p-3 bg-slate-700 rounded border border-slate-600 focus:border-purple-500 outline-none"
                 />
 
-                <button onClick={addActivity} className="w-full bg-green-600 hover:bg-green-700 p-3 rounded font-semibold">
+                <button onClick={addActivity} className="w-full bg-green-600 hover:bg-green-700 p-3 rounded font-semibold transition">
                   記録する
                 </button>
               </div>
             </div>
 
+            {/* history */}
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-bold">活動履歴（全体）</h2>
                 <button
                   onClick={async () => {
-                    await Promise.all([loadActivities(), loadBalances(), loadProfiles()]);
+                    await Promise.all([loadActivities(), loadBalances(), loadProfiles(), loadButtons()]);
                   }}
                   className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
                 >
@@ -802,7 +1093,7 @@ export default function PointEconomy({ economyId }: Props) {
           </div>
         )}
 
-        {/* Exchange */}
+        {/* Exchange（あなたのまま） */}
         {activeTab === 'exchange' && (
           <div className="space-y-6">
             <div className="bg-slate-800/50 backdrop-blur p-6 rounded-lg border border-slate-700">
@@ -963,10 +1254,10 @@ export default function PointEconomy({ economyId }: Props) {
         )}
 
         <footer className="mt-10 text-center text-xs text-slate-400">
-          profiles が見えない場合：profiles テーブル作成 / RLS / schema cache 更新 / ensureProfileRow の alert を確認。
+          クリッカー：activity_buttons を作成して、ClickPad のボタンを押すだけで activities に記録されます。
         </footer>
 
-        {/* ✅ プロフィールモーダル */}
+        {/* ✅ プロフィールモーダル（あなたのまま） */}
         <MemberProfileModal
           open={!!selectedUserId}
           onClose={() => setSelectedUserId('')}
@@ -1008,12 +1299,10 @@ function MemberProfileModal({
       const meId = s.session?.user?.id;
       setIsMe(meId === userId);
 
-      // 1) profile(bio)
       const { data: p, error: e1 } = await supabase.from('profiles').select('bio').eq('user_id', userId).maybeSingle();
       if (e1) return alert(e1.message);
       setBio((p?.bio as string) ?? '');
 
-      // 2) balances（その人の財布）
       const { data: b, error: e2 } = await supabase
         .from('currency_balances_by_user')
         .select('currency_id, balance')
@@ -1022,7 +1311,6 @@ function MemberProfileModal({
       if (e2) return alert(e2.message);
       setBalances((b ?? []).map((r: any) => ({ currency_id: r.currency_id, balance: Number(r.balance) })));
 
-      // 3) recent activities（その人の最近）
       const { data: a, error: e3 } = await supabase
         .from('activities')
         .select('id, currency_id, points, description, created_at')
