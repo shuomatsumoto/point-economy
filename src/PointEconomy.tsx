@@ -53,6 +53,9 @@ export default function PointEconomy({ economyId }: Props) {
 
   const [me, setMe] = useState<{ id: string; email?: string } | null>(null);
 
+  // ✅ economy name
+  const [economyName, setEconomyName] = useState<string>('');
+
   // profiles: user_id -> display_name
   const [profiles, setProfiles] = useState<Record<string, string>>({});
   const [myDisplayName, setMyDisplayName] = useState('');
@@ -65,6 +68,10 @@ export default function PointEconomy({ economyId }: Props) {
   // Create forms
   const [newCurrency, setNewCurrency] = useState({ name: '', symbol: '', rules: '', color: '#3b82f6' });
   const [newActivity, setNewActivity] = useState({ currencyId: '', description: '', points: '' });
+
+  // ✅ rules editing
+  const [editingCurrencyId, setEditingCurrencyId] = useState<string>('');
+  const [editingRules, setEditingRules] = useState<string>('');
 
   // Exchange
   const [requests, setRequests] = useState<ExchangeRequest[]>([]);
@@ -92,6 +99,12 @@ export default function PointEconomy({ economyId }: Props) {
     if (error) return alert(error.message);
     const u = data.session?.user;
     setMe(u ? { id: u.id, email: u.email ?? undefined } : null);
+  }
+
+  async function loadEconomyName() {
+    const { data, error } = await supabase.from('economies').select('name').eq('id', economyId).maybeSingle();
+    if (error) return alert(error.message);
+    setEconomyName((data?.name as string) ?? '');
   }
 
   async function ensureProfileRow() {
@@ -132,11 +145,7 @@ export default function PointEconomy({ economyId }: Props) {
     const uid = s.session?.user?.id;
     if (!uid) return;
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('display_name')
-      .eq('user_id', uid)
-      .maybeSingle();
+    const { data, error } = await supabase.from('profiles').select('display_name').eq('user_id', uid).maybeSingle();
 
     if (error) return alert(error.message);
     setMyDisplayName((data?.display_name as string) ?? '');
@@ -267,10 +276,7 @@ export default function PointEconomy({ economyId }: Props) {
 
   function UserLink({ userId }: { userId: string }) {
     return (
-      <button
-        className="underline decoration-slate-500 hover:decoration-slate-200"
-        onClick={() => setSelectedUserId(userId)}
-      >
+      <button className="underline decoration-slate-500 hover:decoration-slate-200" onClick={() => setSelectedUserId(userId)}>
         {who(userId)}
       </button>
     );
@@ -395,6 +401,33 @@ export default function PointEconomy({ economyId }: Props) {
     await Promise.all([loadRequests(), loadBalances()]);
   }
 
+  // ✅ currency rules editing
+  function startEditRules(c: Currency) {
+    setEditingCurrencyId(c.id);
+    setEditingRules(c.rules ?? '');
+  }
+
+  function cancelEditRules() {
+    setEditingCurrencyId('');
+    setEditingRules('');
+  }
+
+  async function saveRules(currencyId: string) {
+    const next = editingRules.trim();
+
+    const { error } = await supabase
+      .from('currencies')
+      .update({ rules: next ? next : null })
+      .eq('id', currencyId)
+      .eq('economy_id', economyId);
+
+    if (error) return alert(error.message);
+
+    await loadCurrencies();
+    cancelEditRules();
+    alert('ルールを保存しました');
+  }
+
   // ---------------------------
   // Effects
   // ---------------------------
@@ -405,6 +438,7 @@ export default function PointEconomy({ economyId }: Props) {
       await loadMe();
       await ensureProfileRow();
       await Promise.all([
+        loadEconomyName(),
         loadProfiles(),
         loadMyProfile(),
         loadCurrencies(),
@@ -434,7 +468,7 @@ export default function PointEconomy({ economyId }: Props) {
       <div className="max-w-6xl mx-auto">
         <header className="mb-6 text-center">
           <h1 className="text-4xl font-bold mb-1 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-            マイナー資本主義
+            {economyName || 'Economy'}
           </h1>
           <p className="text-slate-300 text-sm">
             economy: <span className="font-mono">{economyId}</span>
@@ -508,9 +542,7 @@ export default function PointEconomy({ economyId }: Props) {
                   保存
                 </button>
               </div>
-              <div className="text-xs text-slate-400 mt-2">
-                ※表示名は activities / exchange の「by:」表示に反映されます
-              </div>
+              <div className="text-xs text-slate-400 mt-2">※表示名は activities / exchange の「by:」表示に反映されます</div>
             </div>
 
             {/* Balances */}
@@ -551,8 +583,7 @@ export default function PointEconomy({ economyId }: Props) {
                     <div>
                       <div className="text-sm">{a.description}</div>
                       <div className="text-xs text-slate-400">
-                        {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> /{' '}
-                        {cLabel(a.currency_id)}
+                        {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> / {cLabel(a.currency_id)}
                       </div>
                     </div>
                     <div className="text-right">
@@ -621,21 +652,69 @@ export default function PointEconomy({ economyId }: Props) {
               </div>
 
               <div className="space-y-4">
-                {currencies.map((currency) => (
-                  <div key={currency.id} className="p-4 bg-slate-700/50 rounded">
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className="w-6 h-6 rounded-full" style={{ backgroundColor: currency.color }} />
-                      <div className="font-bold text-lg">{currency.name}</div>
-                      <div className="text-slate-400">({currency.symbol})</div>
-                    </div>
-                    {currency.rules && (
-                      <div className="text-sm text-slate-300 mt-2 p-3 bg-slate-800/50 rounded">
-                        <div className="font-semibold text-slate-400 mb-1">獲得ルール:</div>
-                        {currency.rules}
+                {currencies.map((currency) => {
+                  const isEditing = editingCurrencyId === currency.id;
+                  return (
+                    <div key={currency.id} className="p-4 bg-slate-700/50 rounded">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-6 h-6 rounded-full" style={{ backgroundColor: currency.color }} />
+                          <div className="font-bold text-lg">{currency.name}</div>
+                          <div className="text-slate-400">({currency.symbol})</div>
+                        </div>
+
+                        {!isEditing ? (
+                          <button
+                            onClick={() => startEditRules(currency)}
+                            className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
+                          >
+                            ルール編集
+                          </button>
+                        ) : (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => saveRules(currency.id)}
+                              className="px-3 py-2 rounded bg-purple-600 hover:bg-purple-700 text-sm font-semibold"
+                            >
+                              保存
+                            </button>
+                            <button
+                              onClick={cancelEditRules}
+                              className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
+                            >
+                              キャンセル
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))}
+
+                      <div className="mt-3">
+                        {!isEditing ? (
+                          <div className="text-sm text-slate-300 p-3 bg-slate-800/50 rounded">
+                            <div className="font-semibold text-slate-400 mb-1">獲得ルール:</div>
+                            {currency.rules ? (
+                              <div className="whitespace-pre-wrap">{currency.rules}</div>
+                            ) : (
+                              <div className="text-slate-500">（未設定）</div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-slate-300 p-3 bg-slate-800/50 rounded">
+                            <div className="font-semibold text-slate-400 mb-2">獲得ルール（編集）:</div>
+                            <textarea
+                              className="w-full p-3 bg-slate-900 rounded border border-slate-700 focus:border-purple-500 outline-none h-28"
+                              value={editingRules}
+                              onChange={(e) => setEditingRules(e.target.value)}
+                              placeholder="例：30分読書で10pt、1章読了で50pt"
+                            />
+                            <div className="text-xs text-slate-500 mt-2">空にして保存すると「未設定（null）」になります。</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
                 {currencies.length === 0 && <p className="text-slate-400 text-center py-8">まだ銘柄がありません</p>}
               </div>
             </div>
@@ -708,8 +787,7 @@ export default function PointEconomy({ economyId }: Props) {
                       <div className="flex-1">
                         <div className="font-semibold">{a.description}</div>
                         <div className="text-sm text-slate-400 mt-1">
-                          {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> /{' '}
-                          {cLabel(a.currency_id)}
+                          {new Date(a.created_at).toLocaleString('ja-JP')} / <UserLink userId={a.created_by} /> / {cLabel(a.currency_id)}
                         </div>
                       </div>
                       <div className="text-right ml-4">
@@ -804,8 +882,7 @@ export default function PointEconomy({ economyId }: Props) {
                         {cById(r.from_currency_id)?.symbol ?? '???'} → {cById(r.to_currency_id)?.symbol ?? '???'}
                       </div>
                       <div className="text-xs text-slate-300 mt-1">
-                        amount_from: {Number(r.amount_from).toFixed(2)} / status: {r.status} / by:{' '}
-                        <UserLink userId={r.created_by} />
+                        amount_from: {Number(r.amount_from).toFixed(2)} / status: {r.status} / by: <UserLink userId={r.created_by} />
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">{new Date(r.created_at).toLocaleString('ja-JP')}</div>
                     </button>
@@ -829,8 +906,7 @@ export default function PointEconomy({ economyId }: Props) {
                         amount_from: {Number(selectedRequest.amount_from).toFixed(2)} / status: {selectedRequest.status}
                       </div>
                       <div className="text-xs text-slate-400 mt-1">
-                        by <UserLink userId={selectedRequest.created_by} /> /{' '}
-                        {new Date(selectedRequest.created_at).toLocaleString('ja-JP')}
+                        by <UserLink userId={selectedRequest.created_by} /> / {new Date(selectedRequest.created_at).toLocaleString('ja-JP')}
                       </div>
                       {selectedRequest.status === 'finalized' && (
                         <div className="text-xs text-slate-200 mt-2">
@@ -851,17 +927,11 @@ export default function PointEconomy({ economyId }: Props) {
                         className="w-full p-3 bg-slate-800 rounded border border-slate-600 focus:border-purple-500 outline-none"
                       />
 
-                      <button
-                        onClick={submitRate}
-                        className="w-full mt-3 bg-green-600 hover:bg-green-700 p-3 rounded font-semibold"
-                      >
+                      <button onClick={submitRate} className="w-full mt-3 bg-green-600 hover:bg-green-700 p-3 rounded font-semibold">
                         レート提出
                       </button>
 
-                      <button
-                        onClick={finalizeSelected}
-                        className="w-full mt-3 bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold"
-                      >
+                      <button onClick={finalizeSelected} className="w-full mt-3 bg-purple-600 hover:bg-purple-700 p-3 rounded font-semibold">
                         Finalize（平均で確定）
                       </button>
                     </div>
@@ -884,9 +954,7 @@ export default function PointEconomy({ economyId }: Props) {
                       </div>
                     </div>
 
-                    <div className="text-xs text-slate-400">
-                      ※ finalize 後の残高反映は「自分財布」に対して行われます（currency_balances_by_user）。
-                    </div>
+                    <div className="text-xs text-slate-400">※ finalize 後の残高反映は「自分財布」に対して行われます（currency_balances_by_user）。</div>
                   </div>
                 )}
               </div>
@@ -898,7 +966,7 @@ export default function PointEconomy({ economyId }: Props) {
           profiles が見えない場合：profiles テーブル作成 / RLS / schema cache 更新 / ensureProfileRow の alert を確認。
         </footer>
 
-        {/* ✅ これを追加：プロフィールモーダルを実際に表示する */}
+        {/* ✅ プロフィールモーダル */}
         <MemberProfileModal
           open={!!selectedUserId}
           onClose={() => setSelectedUserId('')}
@@ -941,11 +1009,7 @@ function MemberProfileModal({
       setIsMe(meId === userId);
 
       // 1) profile(bio)
-      const { data: p, error: e1 } = await supabase
-        .from('profiles')
-        .select('bio')
-        .eq('user_id', userId)
-        .maybeSingle();
+      const { data: p, error: e1 } = await supabase.from('profiles').select('bio').eq('user_id', userId).maybeSingle();
       if (e1) return alert(e1.message);
       setBio((p?.bio as string) ?? '');
 
@@ -994,10 +1058,8 @@ function MemberProfileModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* overlay */}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
-      {/* modal */}
       <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-xl shadow-xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -1013,7 +1075,6 @@ function MemberProfileModal({
           </button>
         </div>
 
-        {/* bio */}
         <div className="mt-5">
           <div className="text-sm font-semibold text-slate-200 mb-2">コメント</div>
           <textarea
@@ -1024,17 +1085,13 @@ function MemberProfileModal({
             readOnly={!isMe}
           />
           {isMe && (
-            <button
-              onClick={saveBio}
-              className="mt-2 px-4 py-2 rounded bg-purple-600 hover:bg-purple-700 font-semibold text-sm"
-            >
+            <button onClick={saveBio} className="mt-2 px-4 py-2 rounded bg-purple-600 hover:bg-purple-700 font-semibold text-sm">
               コメント保存
             </button>
           )}
           {!isMe && <div className="text-xs text-slate-500 mt-2">※他人のコメントは編集できません</div>}
         </div>
 
-        {/* balances */}
         <div className="mt-6">
           <div className="text-sm font-semibold text-slate-200 mb-2">残高（この人の財布）</div>
           <div className="space-y-2">
@@ -1051,7 +1108,6 @@ function MemberProfileModal({
           </div>
         </div>
 
-        {/* recent activities */}
         <div className="mt-6">
           <div className="text-sm font-semibold text-slate-200 mb-2">最近の活動（この人）</div>
           <div className="space-y-2 max-h-[240px] overflow-auto pr-1">
